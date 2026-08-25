@@ -1,16 +1,6 @@
 from fastapi import FastAPI
+from app.api.routes import router
 
-app = FastAPI()
+app = FastAPI(title="ContentOps API")
 
-@app.get("/")
-def root():
-    return {"message": "ContentOps is running"}
-
-@app.get("/health")
-def root():
-    return {"status": "ok",
-    "service": "contentops-api"}
-
-@app.get("/hello")
-def root():
-    return {"message": "Hello from ContentOps"}
+app.include_router(router)
