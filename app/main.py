@@ -8,4 +8,9 @@ def root():
 
 @app.get("/health")
 def root():
-    return {"status": "ok"}
+    return {"status": "ok",
+    "service": "contentops-api"}
+
+@app.get("/hello")
+def root():
+    return {"message": "Hello from ContentOps"}
