@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+import os
 
 router = APIRouter()
 
@@ -14,3 +15,7 @@ def root():
 @router.get("/hello")
 def root():
     return {"message": "Hello from ContentOps"}
+
+@router.get("/config")
+def root():
+    return {"app_name": os.getenv("APP_NAME"), "environment": os.getenv("ENVIRONMENT")}
