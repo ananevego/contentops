@@ -1,5 +1,5 @@
-from pydantic import BaseModel
 from typing import Optional
+from pydantic import BaseModel
 
 class ContentItem(BaseModel):
     source: str
@@ -10,3 +10,5 @@ class ContentItem(BaseModel):
     likes: int
     comments: int
     shares: int
+    url: str
+    created_at: str

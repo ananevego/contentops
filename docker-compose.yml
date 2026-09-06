@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: contentops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: contentops
+      POSTGRES_USER: contentops
+      POSTGRES_PASSWORD: contentops
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
