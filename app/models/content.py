@@ -6,6 +6,7 @@ class ContentItem(BaseModel):
     external_id: str
     author: str
     text: str
+    transcript: str | None
     views: int
     likes: int
     comments: int

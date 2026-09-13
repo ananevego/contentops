@@ -20,6 +20,7 @@ def save_content(session: Session, content: ContentItem):
         external_id=content.external_id,
         author=content.author,
         text=content.text,
+        transcript=content.transcript,
         views=content.views,
         likes=content.likes,
         comments=content.comments,
