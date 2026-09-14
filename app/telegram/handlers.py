@@ -23,6 +23,7 @@ from app.telegram.keyboards import (
     prompt_editor_menu,
     parsing_confirmation_menu,
     source_errors_menu,
+    idea_result_menu,
     trends_list_keyboard,
 )
 from app.collectors.apify_tiktok import (
@@ -507,10 +508,23 @@ async def button_handler(
     # АНАЛИЗ
     # ======================================
 
-    if query.data.startswith("analyze_"):
-        index = int(
-            query.data.split("_")[1]
-        )
+    if (
+        query.data.startswith("analyze_")
+        or query.data == "regenerate_idea"
+    ):
+        if query.data == "regenerate_idea":
+            index = context.user_data.get("latest_trend_index")
+
+            if index is None:
+                await query.edit_message_text(
+                    "❌ Сначала выбери тренд и создай идею.",
+                    reply_markup=main_menu(),
+                )
+                return
+        else:
+            index = int(
+                query.data.split("_")[1]
+            )
 
         trends = user_trends.get(user_id, [])
 
@@ -529,20 +543,32 @@ async def button_handler(
         stage = "загрузки данных TikTok"
 
         try:
-            trend = trends[index]
-            video = await collect_tiktok_details(trend["video"])
+            cached_context = context.user_data.get(
+                "latest_idea_context"
+            )
 
-            if not video:
-                raise ValueError("не удалось загрузить данные видео")
+            if query.data == "regenerate_idea" and cached_context:
+                video = cached_context["video"]
+                extracted_content = cached_context[
+                    "extracted_content"
+                ]
+                score = cached_context["score"]
+            else:
+                trend = trends[index]
+                video = await collect_tiktok_details(trend["video"])
 
-            stage = "получения транскрипции или OCR"
-            extracted_content = await extract_content(video)
+                if not video:
+                    raise ValueError("не удалось загрузить данные видео")
+
+                stage = "получения транскрипции или OCR"
+                extracted_content = await extract_content(video)
+                score = trend["score"]
 
             stage = "сохранения и генерации идеи"
             idea = await asyncio.to_thread(
                 generate_idea_for_trend,
                 video,
-                trend["score"],
+                score,
                 extracted_content,
                 get_prompt(
                     get_user_settings(user_id),
@@ -580,31 +606,16 @@ async def button_handler(
             return
 
         context.user_data["latest_idea"] = idea
+        context.user_data["latest_trend_index"] = index
+        context.user_data["latest_idea_context"] = {
+            "video": video,
+            "score": score,
+            "extracted_content": extracted_content,
+        }
 
         await query.edit_message_text(
             f"💡 ИДЕЯ ДЛЯ TELEGRAM\n\n{idea}",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "📝 Создать пост",
-                            callback_data="post",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "◀️ К трендам",
-                            callback_data="trends_list",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "◀️ Главное меню",
-                            callback_data="menu",
-                        )
-                    ],
-                ]
-            ),
+            reply_markup=idea_result_menu(),
         )
         return
 
@@ -618,22 +629,7 @@ async def button_handler(
         if idea:
             await query.edit_message_text(
                 f"💡 ИДЕЯ ДЛЯ TELEGRAM\n\n{idea}",
-                reply_markup=InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "📝 Создать пост",
-                                callback_data="post",
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                "◀️ Главное меню",
-                                callback_data="menu",
-                            )
-                        ],
-                    ]
-                ),
+                reply_markup=idea_result_menu(),
             )
             return
 
@@ -644,6 +640,21 @@ async def button_handler(
             "Полные данные и транскрипция будут запрошены "
             "только для выбранного ролика.",
             reply_markup=main_menu(),
+        )
+        return
+
+    if query.data == "edit_idea":
+        if not context.user_data.get("latest_idea"):
+            await query.edit_message_text(
+                "❌ Сначала создай идею для выбранного тренда.",
+                reply_markup=main_menu(),
+            )
+            return
+
+        context.user_data["waiting_for"] = "edit_idea"
+        await query.edit_message_text(
+            "✏️ РЕДАКТИРОВАНИЕ ИДЕИ\n\n"
+            "Отправь полный обновлённый текст идеи одним сообщением."
         )
         return
 
@@ -1033,6 +1044,26 @@ async def text_handler(
         await update.message.reply_text(
             f"✅ Промпт {title} сохранён.",
             reply_markup=prompts_menu(),
+        )
+        return
+
+    # ======================================
+    # РЕДАКТИРОВАНИЕ ИДЕИ
+    # ======================================
+
+    if waiting_for == "edit_idea":
+        if len(text) > 3500:
+            await update.message.reply_text(
+                "❌ Идея слишком длинная. Максимум — 3 500 символов."
+            )
+            return
+
+        context.user_data["latest_idea"] = text
+        context.user_data.pop("waiting_for", None)
+
+        await update.message.reply_text(
+            f"✅ Идея обновлена.\n\n💡 ИДЕЯ ДЛЯ TELEGRAM\n\n{text}",
+            reply_markup=idea_result_menu(),
         )
         return
 

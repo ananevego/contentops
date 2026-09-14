@@ -260,6 +260,41 @@ def source_errors_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def idea_result_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🔄 Другая идея",
+                    callback_data="regenerate_idea",
+                ),
+                InlineKeyboardButton(
+                    "✏️ Изменить идею",
+                    callback_data="edit_idea",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "📝 Создать пост",
+                    callback_data="post",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "◀️ К трендам",
+                    callback_data="trends_list",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "◀️ Главное меню",
+                    callback_data="menu",
+                ),
+            ],
+        ]
+    )
+
+
 def trends_list_keyboard(
     videos: list,
 ) -> InlineKeyboardMarkup:
