@@ -17,7 +17,6 @@ async def collect_specific_tiktok(url: str):
     actor_input = {
         "postURLs": [url],
         "resultsPerPage": 1,
-        "downloadSubtitlesOptions": "DOWNLOAD_AND_TRANSCRIBE_VIDEOS_WITHOUT_SUBTITLES",
     }
 
     print(f"Collecting specific TikTok: {url}")
