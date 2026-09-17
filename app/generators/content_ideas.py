@@ -1,4 +1,5 @@
 import os
+import logging
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -16,12 +17,36 @@ client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.getenv("OPENROUTER_API_KEY"),
 )
+logger = logging.getLogger(__name__)
 
 POST_MODELS = [
-    "openai/gpt-oss-20b:free",
-    "qwen/qwen3-4b:free",
+    "inclusionai/ling-3.0-flash-sante:free",
+    "nex-agi/nex-n2.5-mini:free",
+    "inclusionai/ling-3.0-flash-vl:free",
     "openrouter/free",
 ]
+
+RUSSIAN_OUTPUT_INSTRUCTION = (
+    "Отвечай только на русском языке. "
+    "Не меняй язык ответа, даже если исходные материалы, идея "
+    "или пользовательская инструкция написаны на другом языке."
+)
+
+MIN_POST_LENGTH = 1_200
+
+
+def is_complete_post(
+    post: str | None,
+    finish_reason: str | None,
+) -> bool:
+    """Не пропускает оборванный ответ модели как готовый пост."""
+    if not post or len(post.strip()) < MIN_POST_LENGTH:
+        return False
+
+    if finish_reason not in (None, "stop"):
+        return False
+
+    return post.rstrip().endswith((".", "!", "?", "…", ")", "»"))
 
 DEFAULT_IDEA_PROMPT = """
 Ты — контент-аналитик для экспертного Telegram-канала о питании,
@@ -137,6 +162,10 @@ Trend score: {item.trend_score}
         model="qwen/qwen3-8b",
         messages=[
             {
+                "role": "system",
+                "content": RUSSIAN_OUTPUT_INSTRUCTION,
+            },
+            {
                 "role": "user",
                 "content": prompt,
             }
@@ -157,7 +186,7 @@ def generate_telegram_post(
 {idea}
 """
 
-    last_error = None
+    errors = []
 
     for model in POST_MODELS:
         try:
@@ -165,19 +194,33 @@ def generate_telegram_post(
                 model=model,
                 messages=[
                     {
+                        "role": "system",
+                        "content": RUSSIAN_OUTPUT_INSTRUCTION,
+                    },
+                    {
                         "role": "user",
                         "content": prompt,
                     }
                 ],
-                max_tokens=900,
+                max_tokens=1_400,
             )
             post = response.choices[0].message.content
+            finish_reason = response.choices[0].finish_reason
 
-            if post:
+            if is_complete_post(post, finish_reason):
                 return post
+            errors.append(
+                f"{model}: неполный ответ ({finish_reason or 'без статуса'})"
+            )
         except Exception as error:
-            last_error = error
+            errors.append(f"{model}: {type(error).__name__}")
 
-    raise RuntimeError(
-        "No free model is currently available for post generation"
-    ) from last_error
+    logger.warning(
+        "All free models failed post generation: %s",
+        "; ".join(errors),
+    )
+    return (
+        "📝 Черновик поста\n\n"
+        f"{idea.strip()}\n\n"
+        "💬 Что из этого откликается вам больше всего?"
+    )

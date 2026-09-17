@@ -14,12 +14,16 @@ from app.telegram.handlers import (
     start,
     text_handler,
 )
+from app.database import create_tables
 
 
 load_dotenv()
 
 
 def run_bot() -> None:
+    # Создаёт только отсутствующие таблицы; данные в уже существующих не меняет.
+    create_tables()
+
     token = os.getenv(
         "TELEGRAM_BOT_TOKEN"
     )

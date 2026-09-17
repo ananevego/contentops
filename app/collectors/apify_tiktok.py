@@ -16,6 +16,22 @@ TREND_VIDEO_FIELDS = [
 ]
 
 
+def describe_apify_error(error: Exception) -> str:
+    """Возвращает безопасную и понятную причину вместо технического traceback."""
+    message = str(error).lower()
+
+    if "429" in message or "rate limit" in message:
+        return "превышен временный лимит Apify — попробуй через несколько минут"
+    if "401" in message or "403" in message or "token" in message:
+        return "неверный или недействительный APIFY_TOKEN"
+    if "timeout" in message or "timed out" in message:
+        return "Apify не ответил вовремя — попробуй повторить"
+    if "connection" in message or "network" in message:
+        return "не удалось подключиться к Apify — проверь интернет и повтори"
+
+    return "Apify временно не смог обработать источник — попробуй повторить"
+
+
 def _matches_source(
     video: dict,
     source_type: str,
@@ -174,16 +190,16 @@ async def _collect_source(
             for offset, video in videos_with_offsets
         ], None
 
-    except Exception as e:
+    except Exception as error:
         print(
             f"Failed to collect "
-            f"{source_type} {source}: {e}"
+            f"{source_type} {source}: {error}"
         )
 
         return [], (
             source_type,
             source,
-            str(e),
+            describe_apify_error(error),
         )
 
 

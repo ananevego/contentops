@@ -11,16 +11,6 @@ def main_menu() -> InlineKeyboardMarkup:
                 "🔥 Тренды",
                 callback_data="trends",
             ),
-            InlineKeyboardButton(
-                "💡 Идея",
-                callback_data="idea",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📝 Создать пост",
-                callback_data="post",
-            ),
         ],
         [
             InlineKeyboardButton(
@@ -55,8 +45,20 @@ def settings_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                "📅 Свежесть видео",
+                callback_data="settings_freshness",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 "✍️ Промпты",
                 callback_data="settings_prompts",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🗂 Использованные TikTok",
+                callback_data="used_tiktok_videos",
             ),
         ],
         [
@@ -159,6 +161,52 @@ def video_count_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def video_freshness_menu() -> InlineKeyboardMarkup:
+    """Выбор минимальной даты публикации видео."""
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "За 1 день",
+                callback_data="freshness_days_1",
+            ),
+            InlineKeyboardButton(
+                "За 3 дня",
+                callback_data="freshness_days_3",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "За 7 дней",
+                callback_data="freshness_days_7",
+            ),
+            InlineKeyboardButton(
+                "За 30 дней",
+                callback_data="freshness_days_30",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "✏️ Указать дату",
+                callback_data="freshness_custom",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "♾ Без ограничения",
+                callback_data="freshness_any",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "◀️ Настройки",
+                callback_data="settings",
+            ),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(keyboard)
+
+
 def prompts_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -172,6 +220,28 @@ def prompts_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     "📝 Промпт поста",
                     callback_data="prompt_post",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "◀️ Настройки",
+                    callback_data="settings",
+                ),
+            ],
+        ]
+    )
+
+
+def used_tiktok_menu(
+    allow_reparse: bool,
+) -> InlineKeyboardMarkup:
+    status = "✅ включён" if allow_reparse else "⛔ выключен"
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"Повторный парсинг: {status}",
+                    callback_data="toggle_used_tiktok_reparse",
                 ),
             ],
             [
@@ -293,6 +363,74 @@ def idea_result_menu() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def post_result_menu(
+    recheck: bool = False,
+) -> InlineKeyboardMarkup:
+    check_label = (
+        "🔬 Проверить повторно по PubMed"
+        if recheck
+        else "🔬 Проверить по PubMed"
+    )
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    check_label,
+                    callback_data="check_post_pubmed",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "💡 К идее",
+                    callback_data="idea",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "◀️ Главное меню",
+                    callback_data="menu",
+                )
+            ],
+        ]
+    )
+
+
+def pubmed_result_menu(
+    needs_revision: bool,
+) -> InlineKeyboardMarkup:
+    keyboard = []
+
+    if needs_revision:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "✍️ Исправить пост по PubMed",
+                    callback_data="revise_post_pubmed",
+                ),
+            ]
+        )
+
+    keyboard.extend(
+        [
+            [
+                InlineKeyboardButton(
+                    "◀️ К посту",
+                    callback_data="show_post",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "◀️ Главное меню",
+                    callback_data="menu",
+                ),
+            ],
+        ]
+    )
+
+    return InlineKeyboardMarkup(keyboard)
 
 
 def trends_list_keyboard(
