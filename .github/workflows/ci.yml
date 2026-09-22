@@ -37,4 +37,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/ananevego/contentops:latest
+          tags: |
+            ghcr.io/ananevego/contentops:latest
+            ghcr.io/ananevego/contentops:${{ github.sha }}
