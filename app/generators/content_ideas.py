@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from app.models.content_db import ContentItemDB
+from app.generators.editorial_style import SEPIA_TELEGRAM_EDITORIAL_PASS
 
 import os
 
@@ -181,6 +182,8 @@ def generate_telegram_post(
 ) -> str:
     """Создаёт готовый Telegram-пост только по одобренной идее."""
     prompt = f"""{instruction}
+
+{SEPIA_TELEGRAM_EDITORIAL_PASS}
 
 ИДЕЯ:
 {idea}
