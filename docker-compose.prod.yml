@@ -1,26 +1,21 @@
 services:
   postgres:
     image: postgres:16
-    container_name: contentops-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-  
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-
   bot:
-    build: .
+    image: ghcr.io/ananevego/contentops:latest
     env_file:
       - .env
     depends_on:
@@ -29,18 +24,6 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
-    volumes:
-      - .:/app  
-    develop:
-      watch:
-        - action: rebuild
-          path: .
-          target: /app
-          ignore:
-            - .venv/
-            - .venv-clean/
-            - __pycache__/
-            - .git/
 
 volumes:
   postgres_data:

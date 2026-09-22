@@ -143,7 +143,18 @@ def save_settings(user_id: int, settings: dict) -> bool:
         return True
     except Exception:
         logger.exception("Failed to save Telegram settings for %s", user_id)
+        # Не оставляем в памяти изменения, которых нет в PostgreSQL. Иначе
+        # бот покажет их до перезапуска, а затем они неожиданно исчезнут.
+        user_settings.pop(user_id, None)
         return False
+
+
+async def report_settings_save_error(update: Update) -> None:
+    """Сообщает об ошибке сохранения вместо ложного подтверждения."""
+    await update.effective_message.reply_text(
+        "❌ Не удалось сохранить настройку: PostgreSQL недоступен. "
+        "Попробуй ещё раз через минуту.",
+    )
 
 
 def get_used_video_ids(user_id: int) -> set[str]:
@@ -428,9 +439,8 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     await update.message.reply_text(
-        "🤖 ContentOps\n\n"
-        "Я помогу находить тренды в TikTok "
-        "и превращать их в идеи для Telegram.",
+        "🤖 ContentOps\n"
+        "Помогаю с созданием постов в Telegram на основе трендов TikTok",
         reply_markup=main_menu(),
     )
 
@@ -1088,8 +1098,7 @@ async def button_handler(
     if query.data == "settings_prompts":
         await query.edit_message_text(
             "✍️ ПРОМПТЫ\n\n"
-            "Выбери, какой промпт посмотреть или изменить.\n\n"
-            "Данные TikTok и текст идеи бот добавляет автоматически.",
+            "Выбери, какой промпт посмотреть или изменить.\n",
             reply_markup=prompts_menu(),
         )
         return
@@ -1115,8 +1124,7 @@ async def button_handler(
 
         await query.edit_message_text(
             f"✏️ ВВОД ПРОМПТА {title.upper()}\n\n"
-            "Отправь новый текст инструкции одним сообщением.\n\n"
-            "Данные TikTok и идея будут добавлены ботом автоматически.",
+            "Отправь новый текст инструкции одним сообщением.\n",
         )
         return
 
@@ -1124,7 +1132,9 @@ async def button_handler(
         prompt_type = query.data.removeprefix("reset_prompt_")
         settings = get_user_settings(user_id)
         settings.pop(f"{prompt_type}_prompt", None)
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
         title = "идеи" if prompt_type == "idea" else "поста"
 
         await query.edit_message_text(
@@ -1154,10 +1164,18 @@ async def button_handler(
         settings["allow_reparse_used_videos"] = enabled
         saved = save_settings(user_id, settings)
         status = "включён" if enabled else "выключен"
-        note = "" if saved else "\n\n⚠️ Не удалось сохранить настройку в базе."
+        if not saved:
+            await query.edit_message_text(
+                "❌ Не удалось сохранить настройку: PostgreSQL недоступен. "
+                "Попробуй ещё раз через минуту.",
+                reply_markup=used_tiktok_menu(
+                    not enabled,
+                ),
+            )
+            return
 
         await query.edit_message_text(
-            f"✅ Повторный парсинг использованных TikTok {status}.{note}",
+            f"✅ Повторный парсинг использованных TikTok {status}.",
             reply_markup=used_tiktok_menu(enabled),
         )
         return
@@ -1188,11 +1206,9 @@ async def button_handler(
 
         await query.edit_message_text(
             "👤 ПРОФИЛИ\n\n"
-            f"{profiles_text}\n\n"
+            f"{profiles_text}\n"
             "Можно указать несколько профилей "
-            "через пробел.\n\n"
-            "Например:\n"
-            "@profile1 @profile2 @profile3",
+            "через пробел.\n",
             reply_markup=profile_settings_menu(),
         )
         return
@@ -1227,7 +1243,9 @@ async def button_handler(
         )
 
         settings["profiles"] = []
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
 
         await query.edit_message_text(
             "✅ Профили очищены.",
@@ -1261,11 +1279,9 @@ async def button_handler(
 
         await query.edit_message_text(
             "#️⃣ ХЕШТЕГИ\n\n"
-            f"{hashtags_text}\n\n"
+            f"{hashtags_text}\n"
             "Можно указать несколько хештегов "
-            "через пробел.\n\n"
-            "Например:\n"
-            "#nutrition #diet #fitness",
+            "через пробел.\n\n",
             reply_markup=hashtag_settings_menu(),
         )
         return
@@ -1299,7 +1315,9 @@ async def button_handler(
         )
 
         settings["hashtags"] = []
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
 
         await query.edit_message_text(
             "✅ Хештеги очищены.",
@@ -1321,7 +1339,7 @@ async def button_handler(
 
         await query.edit_message_text(
             "📅 СВЕЖЕСТЬ ВИДЕО\n\n"
-            f"Искать видео с даты: {current}\n\n"
+            f"Искать видео с даты: {current}\n"
             "Выбери период или укажи точную дату.",
             reply_markup=video_freshness_menu(),
         )
@@ -1331,16 +1349,17 @@ async def button_handler(
         context.user_data["waiting_for"] = "min_video_date"
         await query.edit_message_text(
             "📅 СВОЯ ДАТА\n\n"
-            "Отправь дату, с которой искать видео.\n\n"
-            "Формат: ДД.ММ.ГГГГ или ГГГГ-ММ-ДД\n"
-            "Например: 01.09.2026",
+            "Отправь дату, с которой искать видео.\n"
+            "Формат: ДД.ММ.ГГГГ или ГГГГ-ММ-ДД\n",
         )
         return
 
     if query.data == "freshness_any":
         settings = get_user_settings(user_id)
         settings["min_video_date"] = None
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
         await query.edit_message_text(
             "✅ Ограничение по дате отключено.",
             reply_markup=parsing_confirmation_menu(),
@@ -1354,7 +1373,9 @@ async def button_handler(
         ).date().isoformat()
         settings = get_user_settings(user_id)
         settings["min_video_date"] = min_video_date
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
         formatted_date = datetime.strptime(
             min_video_date,
             "%Y-%m-%d",
@@ -1383,8 +1404,7 @@ async def button_handler(
         await query.edit_message_text(
             "📊 КОЛИЧЕСТВО ВИДЕО\n\n"
             f"Текущее значение: "
-            f"{current_count}\n\n"
-            "Сколько видео получать?",
+            f"{current_count}\n\n",
             reply_markup=video_count_menu(),
         )
         return
@@ -1416,7 +1436,9 @@ async def button_handler(
         settings[
             "results_count"
         ] = count
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
 
         await query.edit_message_text(
             "✅ Настройка сохранена.\n\n"
@@ -1472,7 +1494,9 @@ async def text_handler(
             return
 
         settings[waiting_for] = text
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
         context.user_data.pop("waiting_for", None)
         title = "идеи" if waiting_for == "idea_prompt" else "поста"
 
@@ -1528,7 +1552,9 @@ async def text_handler(
             return
 
         settings["min_video_date"] = parsed_date.isoformat()
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
         context.user_data.pop("waiting_for", None)
 
         await update.message.reply_text(
@@ -1556,7 +1582,9 @@ async def text_handler(
             return
 
         settings["results_count"] = count
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
         context.user_data.pop("waiting_for", None)
 
         await update.message.reply_text(
@@ -1599,7 +1627,9 @@ async def text_handler(
         settings["profiles"] = (
             cleaned_profiles
         )
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
 
         context.user_data.pop(
             "waiting_for",
@@ -1655,7 +1685,9 @@ async def text_handler(
         settings["hashtags"] = (
             cleaned_hashtags
         )
-        save_settings(user_id, settings)
+        if not save_settings(user_id, settings):
+            await report_settings_save_error(update)
+            return
 
         context.user_data.pop(
             "waiting_for",
