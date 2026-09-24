@@ -11,6 +11,9 @@ flowchart TB
     Bot -->|SQLAlchemy| DB[(PostgreSQL 16)]
     DB --- Volume[(postgres_data\nименованный Docker volume)]
 
+    Bot -->|Telegram Bot API| Relay[Cloudflare Worker\nTelegram Relay]
+    Relay -->|HTTPS| Telegram[Telegram Bot API]
+
     Bot -->|TikTok-метаданные, OCR, транскрипции| Apify[Apify API]
     Bot -->|идеи, посты, анализ релевантности| OpenRouter[OpenRouter API]
     Bot -->|поиск научных публикаций| PubMed[NCBI PubMed API]
@@ -23,28 +26,82 @@ flowchart TB
 
 Архитектура состоит из одного прикладного контейнера и отдельного контейнера базы данных. Взаимодействие между ними происходит внутри сети Docker Compose: приложение обращается к БД по DNS-имени `postgres`, а не по опубликованному порту хоста. Внешние интеграции доступны только через исходящие запросы из контейнера приложения.
 
+Для production-доступа к Telegram Bot API используется Cloudflare Worker как relay. Это связано с тем, что из Yandex Cloud VM прямое TCP-соединение с `api.telegram.org:443` оказалось недоступным, несмотря на наличие рабочего исходящего Интернет-соединения. Worker принимает запрос от приложения, проверяет секретный заголовок и перенаправляет запрос в Telegram Bot API.
+
+В локальной разработке relay не требуется: если переменные `TELEGRAM_RELAY_URL` и `RELAY_SECRET` не заданы, приложение обращается к Telegram Bot API напрямую.
+
 ## Сервисы
 
 ### `bot`
 
 Основной сервис запускается из Docker-образа командой `python -m app.telegram.bot`. Он использует библиотеку `python-telegram-bot` и получает обновления Telegram методом long polling. Поэтому для работы не нужен публичный HTTP-вход, webhook, домен или TLS-терминация: контейнер сам устанавливает исходящее соединение к Telegram API.
 
+В production исходящие запросы к Telegram проходят через Cloudflare Worker relay. URL relay и секрет передаются приложению через переменные окружения:
+
+* `TELEGRAM_RELAY_URL` — URL Cloudflare Worker;
+* `RELAY_SECRET` — секрет для аутентификации запросов к Worker.
+
+Relay включается только если обе переменные заданы. Благодаря этому один и тот же Docker-образ используется и локально, и в production:
+
+```text
+Локальная разработка:
+
+ContentOps → Telegram Bot API
+
+
+Production:
+
+ContentOps → Cloudflare Worker → Telegram Bot API
+```
+
 При старте бот:
 
 1. Создаёт отсутствующие таблицы в PostgreSQL через SQLAlchemy.
 2. Проверяет наличие `TELEGRAM_BOT_TOKEN`.
-3. Регистрирует обработчики команд, callback-кнопок и текстовых сообщений.
-4. Запускает polling-цикл.
+3. Проверяет наличие production relay-конфигурации, если она задана.
+4. Регистрирует обработчики команд, callback-кнопок и текстовых сообщений.
+5. Запускает polling-цикл.
 
 Сервис использует `restart: unless-stopped`. Docker перезапустит его после аварийного завершения или перезагрузки хоста, кроме случая, когда оператор остановил контейнер явно.
+
+### `Cloudflare Worker Telegram Relay`
+
+Cloudflare Worker используется как промежуточный HTTPS relay между production-контейнером ContentOps и Telegram Bot API.
+
+Worker:
+
+1. Получает HTTP-запрос от ContentOps.
+2. Проверяет заголовок `X-Relay-Secret`.
+3. Сравнивает его со значением `RELAY_SECRET`, хранящимся в секретах Worker.
+4. При успешной проверке перенаправляет запрос на соответствующий endpoint `api.telegram.org`.
+5. Возвращает ответ Telegram обратно приложению.
+
+Секрет relay не хранится в исходном коде и не попадает в Docker image. На production VM он хранится в `.env`, который не отслеживается Git.
+
+Таким образом, production-запрос выглядит следующим образом:
+
+```text
+ContentOps container
+        │
+        │ HTTPS
+        │ X-Relay-Secret
+        ▼
+Cloudflare Worker
+        │
+        │ HTTPS
+        ▼
+api.telegram.org
+```
+
+Cloudflare Worker не заменяет Telegram Bot API и не хранит Telegram Bot Token. Он используется только как контролируемая точка маршрутизации исходящих запросов.
 
 ### `postgres`
 
 Используется официальный образ `postgres:16`. База хранит:
 
-- собранные элементы контента и рассчитанные оценки тренда;
-- настройки пользователей Telegram;
-- историю видео, уже использованных для создания постов.
+* собранные элементы контента и рассчитанные оценки тренда;
+* настройки пользователей Telegram;
+* историю видео, уже использованных для создания постов.
 
 Данные расположены в именованном томе `postgres_data`, смонтированном в `/var/lib/postgresql/data`. Поэтому пересоздание контейнера PostgreSQL не удаляет данные.
 
@@ -76,26 +133,37 @@ flowchart TB
 
 Для стека предусмотрены два Compose-файла:
 
-| Файл | Назначение | Отличия |
-| --- | --- | --- |
-| `docker-compose.yml` | Локальная разработка | Собирает `bot` из исходников, монтирует каталог проекта и открывает порт PostgreSQL на хосте. Включён Compose watch для пересборки при изменениях. |
-| `docker-compose.prod.yml` | Развёртывание | Использует опубликованный образ `ghcr.io/ananevego/contentops:latest`, не монтирует исходный код и не публикует порт базы данных. |
+| Файл                      | Назначение           | Отличия                                                                                                                                            |
+| ------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docker-compose.yml`      | Локальная разработка | Собирает `bot` из исходников, монтирует каталог проекта и открывает порт PostgreSQL на хосте. Включён Compose watch для пересборки при изменениях. |
+| `docker-compose.prod.yml` | Развёртывание        | Использует опубликованный образ `ghcr.io/ananevego/contentops:latest`, не монтирует исходный код и не публикует порт базы данных.                  |
+
+Production-конфигурация также передаёт `TELEGRAM_RELAY_URL` и `RELAY_SECRET` через `.env`. Локальная конфигурация может не содержать эти переменные: в таком случае relay автоматически отключён.
 
 ## Конфигурация и секреты
 
 Секреты передаются приложению через файл окружения `.env`, указанный в Compose как `env_file`. Сам файл не отслеживается Git и не передаётся в контекст Docker build.
 
-| Группа переменных | Назначение |
-| --- | --- |
-| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Инициализация PostgreSQL и строка подключения приложения. |
-| `POSTGRES_HOST`, `POSTGRES_PORT` | Адрес БД. В Compose используется `postgres:5432`. |
-| `TELEGRAM_BOT_TOKEN` | Аутентификация Telegram-бота. |
-| `APIFY_TOKEN` | Доступ к TikTok-коллекторам, транскрипции и OCR. |
-| `OPENROUTER_API_KEY` | Генерация идей и постов, LLM-анализ. |
-| `NCBI_EMAIL`, `NCBI_API_KEY` | Запросы к PubMed/NCBI для фактчекинга. |
-| `APP_NAME`, `ENVIRONMENT` | Метаданные, возвращаемые маршрутом FastAPI `/config`. |
+| Группа переменных                                   | Назначение                                                             |
+| --------------------------------------------------- | ---------------------------------------------------------------------- |
+| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Инициализация PostgreSQL и строка подключения приложения.              |
+| `POSTGRES_HOST`, `POSTGRES_PORT`                    | Адрес БД. В Compose используется `postgres:5432`.                      |
+| `TELEGRAM_BOT_TOKEN`                                | Аутентификация Telegram-бота.                                          |
+| `TELEGRAM_RELAY_URL`                                | URL Cloudflare Worker relay для production-доступа к Telegram Bot API. |
+| `RELAY_SECRET`                                      | Секрет для аутентификации запросов ContentOps к Cloudflare Worker.     |
+| `APIFY_TOKEN`                                       | Доступ к TikTok-коллекторам, транскрипции и OCR.                       |
+| `OPENROUTER_API_KEY`                                | Генерация идей и постов, LLM-анализ.                                   |
+| `NCBI_EMAIL`, `NCBI_API_KEY`                        | Запросы к PubMed/NCBI для фактчекинга.                                 |
+| `APP_NAME`, `ENVIRONMENT`                           | Метаданные, возвращаемые маршрутом FastAPI `/config`.                  |
 
 В production секреты должны находиться в защищённом окружении хоста или внешнем менеджере секретов. Они не должны попадать в Dockerfile, Compose-файлы, логи или историю Git.
+
+`RELAY_SECRET` хранится в двух местах:
+
+* в Cloudflare Worker как Secret;
+* на production VM в `.env`.
+
+Значение секрета не встраивается в исходный код или Docker image.
 
 ## CI/CD
 
@@ -109,10 +177,12 @@ push → checkout → Python 3.13 → pip install → pytest
 
 После успешного `pytest` workflow публикует образ в GitHub Container Registry с двумя тегами:
 
-- `ghcr.io/ananevego/contentops:latest` — последняя успешная сборка;
-- `ghcr.io/ananevego/contentops:<SHA коммита>` — неизменяемая версия конкретного коммита.
+* `ghcr.io/ananevego/contentops:latest` — последняя успешная сборка;
+* `ghcr.io/ananevego/contentops:<SHA коммита>` — неизменяемая версия конкретного коммита.
 
 SHA-тег нужен для воспроизводимого развёртывания и отката: он позволяет запустить строго тот образ, который был собран из определённой версии исходного кода, без зависимости от изменяемого `latest`.
+
+Production VM получает новый образ из GHCR и запускает его через `docker-compose.prod.yml`. Секреты и production-конфигурация при этом остаются на VM и не входят в CI/CD artifact.
 
 ## Проверки
 
