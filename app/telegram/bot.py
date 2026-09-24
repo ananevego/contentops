@@ -1,6 +1,7 @@
 import os
 
 from dotenv import load_dotenv
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -33,11 +34,58 @@ def run_bot() -> None:
             "TELEGRAM_BOT_TOKEN is not set"
         )
 
-    application = (
+    relay_url = os.getenv(
+        "TELEGRAM_RELAY_URL"
+    )
+    relay_secret = os.getenv(
+        "RELAY_SECRET"
+    )
+
+    builder = (
         Application.builder()
         .token(token)
-        .build()
     )
+
+    if relay_url and relay_secret:
+        relay_headers = {
+            "X-Relay-Secret": relay_secret,
+        }
+
+        request = HTTPXRequest(
+            httpx_kwargs={
+                "headers": relay_headers,
+            }
+        )
+
+        get_updates_request = HTTPXRequest(
+            httpx_kwargs={
+                "headers": relay_headers,
+            }
+        )
+
+        builder = (
+            builder
+            .base_url(
+                f"{relay_url}/bot"
+            )
+            .base_file_url(
+                f"{relay_url}/file/bot"
+            )
+            .request(request)
+            .get_updates_request(
+                get_updates_request
+            )
+        )
+
+        print(
+            "Telegram relay enabled"
+        )
+    else:
+        print(
+            "Telegram relay disabled"
+        )
+
+    application = builder.build()
 
     application.add_handler(
         CommandHandler(
