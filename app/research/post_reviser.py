@@ -3,7 +3,7 @@
 import re
 import logging
 
-from app.generators.content_ideas import client
+from app.generators.content_ideas import get_openrouter_client
 
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,7 @@ def _generate_pubmed_post(
 """.strip()
 
     errors = []
+    client = get_openrouter_client()
 
     for model in FREE_POST_MODELS:
         try:

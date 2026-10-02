@@ -7,17 +7,8 @@ from openai import OpenAI
 from app.models.content_db import ContentItemDB
 from app.generators.editorial_style import SEPIA_TELEGRAM_EDITORIAL_PASS
 
-import os
-
-from dotenv import load_dotenv
-from openai import OpenAI
-
 load_dotenv()
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-)
 logger = logging.getLogger(__name__)
 
 POST_MODELS = [
@@ -38,6 +29,18 @@ MIN_POST_LENGTH = 1_200
 
 class PostGenerationError(RuntimeError):
     """Ни одна модель не вернула готовый пост приемлемого качества."""
+
+
+def get_openrouter_client() -> OpenAI:
+    """Creates the client only when a model request is actually made."""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set")
+
+    return OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
 
 
 def is_complete_post(
@@ -163,7 +166,7 @@ Trend score: {item.trend_score}
 Ссылка: {item.url}
 """
 
-    response = client.chat.completions.create(
+    response = get_openrouter_client().chat.completions.create(
         model="qwen/qwen3-8b",
         messages=[
             {
@@ -194,6 +197,7 @@ def generate_telegram_post(
 """
 
     errors = []
+    client = get_openrouter_client()
 
     for model in POST_MODELS:
         try:

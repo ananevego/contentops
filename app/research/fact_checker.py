@@ -359,10 +359,11 @@ def _build_pubmed_queries(search_query: str) -> list[str]:
         search_query,
         flags=re.IGNORECASE,
     )
-    # В корректном JSON они были бы экранированы, но для поиска PubMed
-    # кавычки не обязательны. Удаляем их и не передаём синтаксическую ошибку
-    # дальше даже при частично повреждённом ответе модели.
-    normalized_query = normalized_query.replace('"', "")
+    # Непарные кавычки встречаются в частично повреждённом ответе модели и
+    # делают запрос невалидным. Корректные пары сохраняем: они нужны PubMed
+    # для точного поиска многословных терминов.
+    if normalized_query.count('"') % 2:
+        normalized_query = normalized_query.replace('"', "")
     queries = [normalized_query]
     untagged_query = re.sub(
         r"\[Title/Abstract\]",

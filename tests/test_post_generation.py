@@ -16,10 +16,16 @@ class PostGenerationTests(unittest.TestCase):
             ]
         )
 
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_kwargs: response)
+            )
+        )
+
         with patch.object(
-            content_ideas.client.chat.completions,
-            "create",
-            return_value=response,
+            content_ideas,
+            "get_openrouter_client",
+            return_value=client,
         ):
             with self.assertRaises(content_ideas.PostGenerationError):
                 content_ideas.generate_telegram_post("Исходная идея")
