@@ -1158,7 +1158,10 @@ async def button_handler(
         )
         return
 
-    if query.data == "revise_post_pubmed":
+    if query.data in {
+        "supplement_post_pubmed",
+        "filter_post_pubmed",
+    }:
         post = context.user_data.get("latest_post")
         fact_check = context.user_data.get("latest_fact_check")
 
@@ -1169,25 +1172,42 @@ async def button_handler(
             )
             return
 
-        await query.edit_message_text(
-            "✍️ Исправляю пост только по выводам PubMed..."
+        is_supplement = query.data == "supplement_post_pubmed"
+        progress_text = (
+            "➕ Добавляю PubMed к подтверждённым тезисам..."
+            if is_supplement
+            else "✂️ Оставляю только подтверждённые тезисы PubMed..."
         )
+        await query.edit_message_text(progress_text)
 
         try:
             from app.research.post_reviser import (
-                revise_post_from_pubmed,
+                filter_post_to_supported_pubmed,
+                supplement_post_with_pubmed,
             )
 
+            revision_function = (
+                supplement_post_with_pubmed
+                if is_supplement
+                else filter_post_to_supported_pubmed
+            )
             revised_post = await asyncio.to_thread(
-                revise_post_from_pubmed,
+                revision_function,
                 post,
                 fact_check,
             )
         except Exception as error:
-            logger.exception("Failed to revise post with PubMed")
+            logger.exception("Failed to apply PubMed post revision")
             await query.edit_message_text(
-                "❌ Не удалось исправить пост.\n\n"
-                f"Причина: {explain_error(error, 'исправление поста')}",
+                "❌ Не удалось обработать пост по PubMed.\n\n"
+                f"Причина: {explain_error(error, 'обработку поста')}",
+                reply_markup=pubmed_result_menu(True),
+            )
+            return
+
+        if not revised_post.strip():
+            await query.edit_message_text(
+                "❌ В посте не найдено тезисов, подтверждённых PubMed.",
                 reply_markup=pubmed_result_menu(True),
             )
             return
@@ -1197,7 +1217,7 @@ async def button_handler(
         context.user_data["post_revised_by_pubmed"] = True
 
         await query.edit_message_text(
-            f"📝 ПОСТ ПОСЛЕ ПРОВЕРКИ PUBMED\n\n{revised_post[:3800]}",
+            f"📝 ПОСТ ПОСЛЕ ОБРАБОТКИ PUBMED\n\n{revised_post[:3800]}",
             reply_markup=post_result_menu(recheck=True),
         )
         return

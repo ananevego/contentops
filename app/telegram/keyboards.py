@@ -400,17 +400,20 @@ def post_result_menu(
 def pubmed_result_menu(
     needs_revision: bool,
 ) -> InlineKeyboardMarkup:
-    keyboard = []
-
-    if needs_revision:
-        keyboard.append(
-            [
-                InlineKeyboardButton(
-                    "✍️ Исправить пост по PubMed",
-                    callback_data="revise_post_pubmed",
-                ),
-            ]
-        )
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "➕ Добавить PubMed к подтверждённым",
+                callback_data="supplement_post_pubmed",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "✂️ Оставить только подтверждённые",
+                callback_data="filter_post_pubmed",
+            ),
+        ],
+    ]
 
     keyboard.extend(
         [
