@@ -36,6 +36,10 @@ RUSSIAN_OUTPUT_INSTRUCTION = (
 MIN_POST_LENGTH = 1_200
 
 
+class PostGenerationError(RuntimeError):
+    """Ни одна модель не вернула готовый пост приемлемого качества."""
+
+
 def is_complete_post(
     post: str | None,
     finish_reason: str | None,
@@ -205,7 +209,7 @@ def generate_telegram_post(
                         "content": prompt,
                     }
                 ],
-                max_tokens=1_400,
+                max_tokens=2_000,
             )
             post = response.choices[0].message.content
             finish_reason = response.choices[0].finish_reason
@@ -222,8 +226,7 @@ def generate_telegram_post(
         "All free models failed post generation: %s",
         "; ".join(errors),
     )
-    return (
-        "📝 Черновик поста\n\n"
-        f"{idea.strip()}\n\n"
-        "💬 Что из этого откликается вам больше всего?"
+    raise PostGenerationError(
+        "Не удалось получить полный текст поста. "
+        "Попробуй создать его ещё раз."
     )

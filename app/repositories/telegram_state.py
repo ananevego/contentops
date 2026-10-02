@@ -3,7 +3,11 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.content_db import TelegramUserSettingsDB, UsedTikTokVideoDB
+from app.models.content_db import (
+    ExcludedTikTokVideoDB,
+    TelegramUserSettingsDB,
+    UsedTikTokVideoDB,
+)
 
 
 DEFAULT_SETTINGS = {
@@ -106,6 +110,40 @@ def get_used_video_ids(session: Session, telegram_user_id: int) -> set[str]:
         session.scalars(
             select(UsedTikTokVideoDB.tiktok_video_id).where(
                 UsedTikTokVideoDB.telegram_user_id == telegram_user_id,
+            )
+        )
+    )
+
+
+def exclude_tiktok_video(
+    session: Session,
+    telegram_user_id: int,
+    video_id: str,
+) -> None:
+    """Сохраняет исключение один раз, не создавая дублей."""
+    existing = session.scalar(
+        select(ExcludedTikTokVideoDB).where(
+            ExcludedTikTokVideoDB.telegram_user_id == telegram_user_id,
+            ExcludedTikTokVideoDB.tiktok_video_id == video_id,
+        )
+    )
+    if existing:
+        return
+
+    session.add(
+        ExcludedTikTokVideoDB(
+            telegram_user_id=telegram_user_id,
+            tiktok_video_id=video_id,
+        )
+    )
+    session.commit()
+
+
+def get_excluded_video_ids(session: Session, telegram_user_id: int) -> set[str]:
+    return set(
+        session.scalars(
+            select(ExcludedTikTokVideoDB.tiktok_video_id).where(
+                ExcludedTikTokVideoDB.telegram_user_id == telegram_user_id,
             )
         )
     )

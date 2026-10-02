@@ -14,6 +14,12 @@ def main_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                "🔗 Пост по ссылке TikTok",
+                callback_data="tiktok_link",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 "⚙️ Настройки",
                 callback_data="settings",
             ),
@@ -235,15 +241,8 @@ def prompts_menu() -> InlineKeyboardMarkup:
 def used_tiktok_menu(
     allow_reparse: bool,
 ) -> InlineKeyboardMarkup:
-    status = "✅ включён" if allow_reparse else "⛔ выключен"
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton(
-                    f"Повторный парсинг: {status}",
-                    callback_data="toggle_used_tiktok_reparse",
-                ),
-            ],
             [
                 InlineKeyboardButton(
                     "◀️ Настройки",

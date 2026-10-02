@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from urllib.parse import urlparse
 from datetime import datetime, time, timedelta, timezone
 
 from telegram import (
@@ -36,6 +37,9 @@ from app.collectors.apify_tiktok import (
     collect_tiktok_details,
     collect_tiktok_url,
 )
+from app.collectors.apify_tiktok_specific import (
+    collect_specific_tiktok,
+)
 from app.collectors.content_extractor import (
     extract_content,
 )
@@ -50,6 +54,17 @@ user_trends = {}
 logger = logging.getLogger(__name__)
 
 
+def is_tiktok_url(value: str) -> bool:
+    """Принимает обычные и короткие ссылки TikTok, но не произвольные URL."""
+    parsed = urlparse(value.strip())
+    host = (parsed.hostname or "").casefold()
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.path)
+        and (host == "tiktok.com" or host.endswith(".tiktok.com"))
+    )
+
+
 def explain_error(error: Exception, action: str) -> str:
     """Переводит ошибки внешних сервисов в действия, понятные пользователю."""
     error_type = type(error).__name__
@@ -60,6 +75,8 @@ def explain_error(error: Exception, action: str) -> str:
             "PostgreSQL сейчас недоступен. Попробуй ещё раз через минуту; "
             "если ошибка повторится, нужно проверить базу данных."
         )
+    if error_type == "PostGenerationError":
+        return str(error)
     if "429" in message or "rate limit" in message:
         return (
             "Сервис временно ограничил число запросов. "
@@ -167,6 +184,44 @@ def get_used_video_ids(user_id: int) -> set[str]:
     except Exception:
         logger.exception("Failed to load used TikTok videos for %s", user_id)
         return set()
+
+
+def get_excluded_video_ids(user_id: int) -> set[str]:
+    try:
+        from app.database import SessionLocal
+        from app.repositories.telegram_state import get_excluded_video_ids as load_ids
+
+        with SessionLocal() as session:
+            return load_ids(session, user_id)
+    except Exception:
+        logger.exception("Failed to load excluded TikTok videos for %s", user_id)
+        return set()
+
+
+def exclude_video(user_id: int, video: dict) -> bool:
+    video_id = str(video.get("id", ""))
+    if not video_id:
+        return False
+
+    try:
+        from app.database import SessionLocal
+        from app.repositories.telegram_state import exclude_tiktok_video
+
+        with SessionLocal() as session:
+            exclude_tiktok_video(session, user_id, video_id)
+        return True
+    except Exception:
+        logger.exception("Failed to exclude TikTok video for %s", user_id)
+        return False
+
+
+def remove_video_from_current_trends(user_id: int, video_id: str) -> None:
+    """Скрывает ролик из уже показанной выдачи без нового сбора Apify."""
+    user_trends[user_id] = [
+        trend
+        for trend in user_trends.get(user_id, [])
+        if str(trend["video"].get("id", "")) != video_id
+    ]
 
 
 def remember_video_for_post(
@@ -411,6 +466,12 @@ async def show_scored_trends(
         except Exception as error:
             print(f"Failed to calculate score: {error}")
 
+    hidden_video_ids = get_excluded_video_ids(user_id)
+    scored_videos = [
+        trend
+        for trend in scored_videos
+        if str(trend["video"].get("id", "")) not in hidden_video_ids
+    ]
     scored_videos.sort(
         key=lambda item: item["score"],
         reverse=True,
@@ -487,6 +548,20 @@ async def button_handler(
         return
 
     # ======================================
+    # ПОСТ ПО ПРЯМОЙ ССЫЛКЕ TIKTOK
+    # ======================================
+
+    if query.data == "tiktok_link":
+        context.user_data["waiting_for"] = "tiktok_link"
+        await query.edit_message_text(
+            "🔗 ПОСТ ПО ССЫЛКЕ TIKTOK\n\n"
+            "Отправь ссылку на один ролик TikTok. Я загружу только этот ролик "
+            "и создам по нему идею для поста — без поиска трендов, профилей "
+            "и хештегов."
+        )
+        return
+
+    # ======================================
     # ЗАПУСК ПАРСИНГА
     # ======================================
 
@@ -548,13 +623,13 @@ async def button_handler(
             collection["videos"],
             min_video_date,
         )
-        if not settings.get("allow_reparse_used_videos", False):
-            used_video_ids = get_used_video_ids(user_id)
-            videos = [
-                video
-                for video in videos
-                if str(video.get("id", "")) not in used_video_ids
-            ]
+        hidden_video_ids = get_excluded_video_ids(user_id)
+        hidden_video_ids |= get_used_video_ids(user_id)
+        videos = [
+            video
+            for video in videos
+            if str(video.get("id", "")) not in hidden_video_ids
+        ]
         videos = videos[:results_count]
         errors = collection["errors"]
 
@@ -712,6 +787,15 @@ async def button_handler(
         keyboard.append(
             [
                 InlineKeyboardButton(
+                    "🚫 Не показывать это видео",
+                    callback_data=f"exclude_{index}",
+                )
+            ]
+        )
+
+        keyboard.append(
+            [
+                InlineKeyboardButton(
                     "◀️ К трендам",
                     callback_data="trends_list",
                 )
@@ -730,6 +814,34 @@ async def button_handler(
                     keyboard
                 )
             ),
+        )
+        return
+
+    if query.data.startswith("exclude_"):
+        index = int(query.data.split("_")[1])
+        trends = user_trends.get(user_id, [])
+
+        if index >= len(trends):
+            await query.edit_message_text(
+                "❌ Видео уже отсутствует в выдаче.",
+                reply_markup=main_menu(),
+            )
+            return
+
+        video = trends[index]["video"]
+        if not exclude_video(user_id, video):
+            await query.edit_message_text(
+                "❌ Не удалось исключить видео. Попробуй ещё раз.",
+                reply_markup=main_menu(),
+            )
+            return
+
+        remove_video_from_current_trends(user_id, str(video.get("id", "")))
+        await query.edit_message_text(
+            "✅ Видео исключено и больше не будет показано в трендах.",
+            reply_markup=trends_list_keyboard(user_trends.get(user_id, []))
+            if user_trends.get(user_id)
+            else main_menu(),
         )
         return
 
@@ -771,10 +883,11 @@ async def button_handler(
     ):
         if query.data == "regenerate_idea":
             index = context.user_data.get("latest_trend_index")
+            cached_context = context.user_data.get("latest_idea_context")
 
-            if index is None:
+            if index is None and not cached_context:
                 await query.edit_message_text(
-                    "❌ Сначала выбери тренд и создай идею.",
+                    "❌ Сначала выбери тренд или отправь ссылку TikTok и создай идею.",
                     reply_markup=main_menu(),
                 )
                 return
@@ -785,7 +898,7 @@ async def button_handler(
 
         trends = user_trends.get(user_id, [])
 
-        if index >= len(trends):
+        if index is not None and index >= len(trends):
             await query.edit_message_text(
                 "❌ Тренд не найден. Запусти поиск ещё раз.",
                 reply_markup=main_menu(),
@@ -800,9 +913,7 @@ async def button_handler(
         stage = "загрузки данных TikTok"
 
         try:
-            cached_context = context.user_data.get(
-                "latest_idea_context"
-            )
+            cached_context = context.user_data.get("latest_idea_context")
 
             if query.data == "regenerate_idea" and cached_context:
                 video = cached_context["video"]
@@ -838,26 +949,32 @@ async def button_handler(
                 "Failed to generate idea at stage %s",
                 stage,
             )
+            error_keyboard = [
+                [
+                    InlineKeyboardButton(
+                        "◀️ К тренду",
+                        callback_data=f"trend_{index}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "◀️ Главное меню",
+                        callback_data="menu",
+                    )
+                ],
+            ] if index is not None else [
+                [
+                    InlineKeyboardButton(
+                        "◀️ Главное меню",
+                        callback_data="menu",
+                    )
+                ],
+            ]
             await query.edit_message_text(
                 "❌ Не удалось создать идею.\n\n"
                 f"Не выполнен этап: {stage}.\n"
                 f"Причина: {explain_error(error, 'создание идеи')}",
-                reply_markup=InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "◀️ К тренду",
-                                callback_data=f"trend_{index}",
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                "◀️ Главное меню",
-                                callback_data="menu",
-                            )
-                        ],
-                    ]
-                ),
+                reply_markup=InlineKeyboardMarkup(error_keyboard),
             )
             return
 
@@ -930,6 +1047,11 @@ async def button_handler(
             )
             return
 
+        if context.user_data.get("post_generation_in_progress"):
+            return
+
+        context.user_data["post_generation_in_progress"] = True
+
         await query.edit_message_text(
             "📝 Создаю готовый пост по идее..."
         )
@@ -952,9 +1074,11 @@ async def button_handler(
             await query.edit_message_text(
                 "❌ Не удалось создать пост.\n\n"
                 f"Причина: {explain_error(error, 'создание поста')}",
-                reply_markup=main_menu(),
+                reply_markup=idea_result_menu(),
             )
             return
+        finally:
+            context.user_data.pop("post_generation_in_progress", None)
 
         await query.edit_message_text(
             f"📝 ГОТОВЫЙ ПОСТ\n\n{post[:3800]}",
@@ -968,6 +1092,10 @@ async def button_handler(
             user_id,
             latest_context.get("video", {}),
             latest_context.get("content_id"),
+        )
+        remove_video_from_current_trends(
+            user_id,
+            str(latest_context.get("video", {}).get("id", "")),
         )
         return
 
@@ -1481,6 +1609,65 @@ async def text_handler(
     settings = get_user_settings(
         user_id
     )
+
+    # ======================================
+    # ПРЯМАЯ ССЫЛКА TIKTOK
+    # ======================================
+
+    if waiting_for == "tiktok_link":
+        if not is_tiktok_url(text):
+            await update.message.reply_text(
+                "❌ Отправь корректную ссылку TikTok, например "
+                "https://www.tiktok.com/@author/video/123456789."
+            )
+            return
+
+        await update.message.reply_text(
+            "🔗 Загружаю выбранный TikTok и извлекаю его содержание..."
+        )
+
+        stage = "загрузки ролика TikTok"
+        try:
+            video = await collect_specific_tiktok(text)
+            if not video:
+                raise ValueError("ролик не найден или недоступен")
+
+            stage = "получения транскрипции или OCR"
+            extracted_content = await extract_content(video)
+
+            stage = "сохранения и генерации идеи"
+            idea, content_id = await asyncio.to_thread(
+                generate_idea_for_trend,
+                video,
+                0.0,
+                extracted_content,
+                get_prompt(settings, "idea"),
+            )
+        except Exception as error:
+            logger.exception("Failed to generate idea from direct TikTok link at %s", stage)
+            await update.message.reply_text(
+                "❌ Не удалось создать идею по ссылке.\n\n"
+                f"Не выполнен этап: {stage}.\n"
+                f"Причина: {explain_error(error, 'создание идеи')}",
+                reply_markup=main_menu(),
+            )
+            return
+
+        context.user_data.pop("waiting_for", None)
+        context.user_data["latest_idea"] = idea
+        context.user_data.pop("latest_trend_index", None)
+        context.user_data["latest_idea_context"] = {
+            "video": video,
+            "score": 0.0,
+            "extracted_content": extracted_content,
+            "content_id": content_id,
+        }
+
+        await update.message.reply_text(
+            f"💡 ИДЕЯ ДЛЯ TELEGRAM\n\n{idea}",
+            reply_markup=idea_result_menu(),
+        )
+        return
 
     # ======================================
     # ПОЛЬЗОВАТЕЛЬСКИЕ ПРОМПТЫ

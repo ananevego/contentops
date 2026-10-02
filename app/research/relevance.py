@@ -284,8 +284,13 @@ Do NOT use outside knowledge.
 For each article classify:
 
 RELEVANT
-- The article directly studies the population, intervention/
-  exposure, outcome, or relationship needed to evaluate the claim.
+- The article directly studies the population/context, intervention or
+  exposure, AND outcome or relationship needed to evaluate the claim.
+- A shared abbreviation, one generic word, or only a neighbouring health
+  topic is never enough. Abbreviations may have multiple meanings in PubMed:
+  use the title and abstract to verify their meaning in this claim.
+- For a training claim, an article must actually study exercise/training;
+  for a nutrition claim, it must actually study the dietary exposure.
 
 NOT_RELEVANT
 - The article is only superficially related by keywords or topic
@@ -377,6 +382,11 @@ PUBMED ARTICLES:
     # ------------------------------------------------------
 
     validated_results = []
+    valid_pmids = {
+        str(article.get("pmid"))
+        for article in articles
+        if article.get("pmid")
+    }
 
     for result in results:
 
@@ -399,7 +409,7 @@ PUBMED ARTICLES:
         )
 
         # Проверяем обязательные поля.
-        if not pmid:
+        if not pmid or str(pmid) not in valid_pmids:
             continue
 
         if relevance not in {

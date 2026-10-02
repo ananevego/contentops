@@ -8,6 +8,7 @@ from openai import AsyncOpenAI
 from app.research.pubmed import (
     search_and_fetch_pubmed,
 )
+from app.research.relevance import analyze_relevance
 
 
 # ==========================================================
@@ -66,6 +67,17 @@ def _get_client() -> AsyncOpenAI:
 # JSON PARSER
 # ==========================================================
 
+def _remove_invalid_json_escapes(text: str) -> str:
+    """Убирает только обратные слэши, которые недопустимы в JSON.
+
+    Некоторые модели ставят обратный слэш перед ``[Title/Abstract]``.
+    В JSON это невалидная escape-последовательность, хотя в самом поисковом
+    запросе слэши не нужны. Валидные JSON-экранирования (например, ``\\n``
+    и ``\\\"``) не изменяются.
+    """
+    return re.sub(r'\\(?!["\\\\/bfnrtu])', "", text)
+
+
 def _extract_json(text: str):
     """
     Преобразует ответ Qwen в Python-объект.
@@ -104,12 +116,49 @@ def _extract_json(text: str):
 
     try:
         return json.loads(text)
-
     except json.JSONDecodeError as exc:
+        # Qwen иногда экранирует квадратные скобки в field tags PubMed.
+        # Повторяем разбор только после узкой нормализации невалидных escape.
+        repaired_text = _remove_invalid_json_escapes(text)
+        if repaired_text != text:
+            try:
+                return json.loads(repaired_text)
+            except json.JSONDecodeError:
+                pass
+
         raise RuntimeError(
             "Qwen returned invalid JSON:\n"
             f"{text}"
         ) from exc
+
+
+def _recover_claims_from_malformed_json(text: str) -> list[dict]:
+    """Извлекает тезисы из типичного ответа модели с кавычками в query.
+
+    Это не универсальный JSON-парсер: используется только как запасной путь
+    для списка ``claim/search_query``, когда модель забыла экранировать
+    кавычки внутри PubMed field tags.
+    """
+    recovered = []
+    for object_text in re.findall(r"\{(.*?)\}", text, flags=re.DOTALL):
+        claim_match = re.search(
+            r'"claim"\s*:\s*"(.*?)"\s*,\s*"search_query"',
+            object_text,
+            flags=re.DOTALL,
+        )
+        query_match = re.search(
+            r'"search_query"\s*:\s*"(.*)"\s*$',
+            object_text,
+            flags=re.DOTALL,
+        )
+        if claim_match and query_match:
+            recovered.append(
+                {
+                    "claim": claim_match.group(1),
+                    "search_query": query_match.group(1),
+                }
+            )
+    return recovered
 
 
 # ==========================================================
@@ -156,18 +205,32 @@ async def _extract_claims(
 Для каждого утверждения верни:
 
 1. claim — само научное утверждение.
-2. search_query — короткий поисковый запрос для PubMed.
+2. search_query — точный поисковый запрос для PubMed.
 
 Правила:
 - Не придумывай утверждения, которых нет в посте.
 - Не меняй смысл исходного утверждения.
 - Сохраняй формулировку как можно ближе к исходному тексту.
+- Один объект — один атомарный тезис. Не объединяй в один тезис
+  несколько разных причин, эффектов или рекомендаций.
 - Максимум 5 утверждений.
 
 Обычный текст пиши на русском языке.
 
-search_query может содержать английские научные термины,
-если это улучшает поиск в PubMed.
+search_query ОБЯЗАТЕЛЬНО составляй на английском языке. Включи в него
+все ключевые части тезиса: популяцию/контекст, воздействие или упражнение
+и измеряемый результат. Используй точные фразы и поля PubMed [Title/Abstract]
+с AND/OR, например:
+resistance training[Title/Abstract] AND training to failure[Title/Abstract]
+AND (strength[Title/Abstract] OR hypertrophy[Title/Abstract])
+
+Внутри search_query НИКОГДА не используй символ двойной кавычки (").
+Он не нужен для PubMed и может сделать JSON невалидным.
+
+Не ищи по одной аббревиатуре или общему слову. Всегда расшифровывай
+аббревиатуру и добавляй контекст: для RIR используй "repetitions in reserve"
+вместе с "resistance training". Запрос "RIR" сам по себе запрещён, потому что
+в PubMed он имеет другие значения. Не подменяй тему тезиса соседней темой.
 
 Верни ТОЛЬКО корректный JSON:
 
@@ -211,9 +274,12 @@ search_query может содержать английские научные �
             "Qwen returned an empty claim extraction response"
         )
 
-    data = _extract_json(
-        content
-    )
+    try:
+        data = _extract_json(content)
+    except RuntimeError as error:
+        data = _recover_claims_from_malformed_json(content)
+        if not data:
+            raise error
 
     if not isinstance(
         data,
@@ -274,14 +340,63 @@ search_query может содержать английские научные �
 # ПОИСК СТАТЕЙ В PUBMED
 # ==========================================================
 
+def _build_pubmed_queries(search_query: str) -> list[str]:
+    """Возвращает точный и безопасный широкий запросы для одного тезиса.
+
+    Модель иногда добавляет в первичный запрос вывод тезиса
+    («сохранение техники», «цена ошибки»), который не обязан встречаться в
+    названии или аннотации исследования. Поэтому для КАЖДОГО запроса строится
+    версия без ограничения только title/abstract и с двумя первыми понятиями.
+    Это общее расширение, а не правило для конкретного поста.
+
+    RIR — пример неоднозначной аббревиатуры в PubMed (в том числе
+    inflammatory risk), поэтому словарь расшифровок не позволяет искать по
+    ней в одиночку.
+    """
+    normalized_query = re.sub(
+        r"\bRIR\b",
+        '"repetitions in reserve"',
+        search_query,
+        flags=re.IGNORECASE,
+    )
+    # В корректном JSON они были бы экранированы, но для поиска PubMed
+    # кавычки не обязательны. Удаляем их и не передаём синтаксическую ошибку
+    # дальше даже при частично повреждённом ответе модели.
+    normalized_query = normalized_query.replace('"', "")
+    queries = [normalized_query]
+    untagged_query = re.sub(
+        r"\[Title/Abstract\]",
+        "",
+        normalized_query,
+        flags=re.IGNORECASE,
+    )
+    concepts = [
+        concept.strip(" ()")
+        for concept in re.split(r"\s+AND\s+", untagged_query, flags=re.IGNORECASE)
+        if concept.strip(" ()")
+    ]
+    broad_concepts = concepts[:2]
+
+    if broad_concepts:
+        broad_query = " AND ".join(broad_concepts)
+        if (
+            '"repetitions in reserve"' in broad_query.casefold()
+            and "resistance training" not in broad_query.casefold()
+        ):
+            broad_query = f'"resistance training" AND ({broad_query})'
+        queries.append(broad_query)
+
+    return list(dict.fromkeys(queries))
+
+
 async def _collect_evidence(
     claims: list[dict],
 ) -> list[dict]:
     """
     Для каждого научного тезиса делает поиск в PubMed.
 
-    PubMed возвращает несколько кандидатов.
-    Позже Qwen выберет из них наиболее подходящую статью.
+    PubMed возвращает кандидатов, затем отдельный этап релевантности
+    исключает статьи, которые совпали только по ключевому слову.
     """
 
     evidence = []
@@ -301,10 +416,44 @@ async def _collect_evidence(
             f"{search_query}"
         )
 
-        articles = await search_and_fetch_pubmed(
-            query=search_query,
-            max_results=5,
-        )
+        # Сначала выполняем точный запрос, затем широкий тематический
+        # запрос. Он не подменяет тезис выводом: выбор и вердикт по-прежнему
+        # делают только по фактической статье ниже.
+        articles_by_pmid = {}
+        for query in _build_pubmed_queries(search_query):
+            articles = await search_and_fetch_pubmed(
+                query=query,
+                max_results=10,
+            )
+            for article in articles:
+                pmid = article.get("pmid")
+                if pmid:
+                    articles_by_pmid[str(pmid)] = article
+
+        articles = list(articles_by_pmid.values())
+
+        # Не позволяем статье с совпавшей аббревиатурой попасть в этап
+        # фактчекинга. Например, RIR в кардиологической статье — не RIR
+        # (repetitions in reserve) из поста о силовых тренировках.
+        relevance = await analyze_relevance(
+            claim=claim,
+            articles=articles,
+        ) if articles else []
+        relevant_pmids = {
+            result["pmid"]
+            for result in relevance
+            if result["relevance"] == "RELEVANT"
+        }
+        # Классификатор релевантности — защитный слой, но не источник истины.
+        # Если он ошибочно отверг все статьи, передаём кандидатов фактчекеру:
+        # тот обязан вернуть INSUFFICIENT_EVIDENCE, если ни одна статья не
+        # проверяет точную формулировку, вместо ложного «ничего не найдено».
+        if relevant_pmids:
+            articles = [
+                article
+                for article in articles
+                if str(article.get("pmid")) in relevant_pmids
+            ]
 
         evidence.append(
             {
@@ -364,9 +513,8 @@ async def _check_evidence(
                         "INSUFFICIENT_EVIDENCE"
                     ),
                     "reason": (
-                        "В PubMed не найдено "
-                        "подходящих исследований "
-                        "по этому запросу."
+                        "Среди найденных в PubMed статей нет исследований, "
+                        "релевантных точной формулировке тезиса."
                     ),
                     "best_pmid": None,
                     "article_title_ru": None,
@@ -455,6 +603,9 @@ INSUFFICIENT_EVIDENCE
 Очень важные правила:
 
 - Используй ТОЛЬКО переданные данные статей.
+- Кандидаты найдены тематическими запросами, но среди них могут быть статьи
+  с более широкой или соседней темой. Не выбирай PMID, если статья не изучает
+  именно популяцию, воздействие и результат из тезиса.
 - Не используй собственные знания вместо данных PubMed.
 - Не придумывай факты, статистику или PMID.
 - Не выдавай корреляцию за причинно-следственную связь.
@@ -636,6 +787,16 @@ INSUFFICIENT_EVIDENCE
                 "корректную статью из найденных."
             )
 
+            article_title_ru = ""
+
+        # Подтверждающий вердикт без выбранной статьи нельзя показать
+        # пользователю и нельзя считать доказательством.
+        if not best_pmid and verdict != "INSUFFICIENT_EVIDENCE":
+            verdict = "INSUFFICIENT_EVIDENCE"
+            reason = (
+                "Не выбрана релевантная статья PubMed, поэтому тезис "
+                "нельзя оценить по найденным данным."
+            )
             article_title_ru = ""
 
         results.append(

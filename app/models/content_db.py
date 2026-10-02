@@ -70,3 +70,17 @@ class UsedTikTokVideoDB(Base):
         DateTime,
         default=datetime.utcnow,
     )
+
+
+class ExcludedTikTokVideoDB(Base):
+    """Ролик, который пользователь не хочет видеть в трендах."""
+
+    __tablename__ = "excluded_tiktok_videos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(index=True)
+    tiktok_video_id: Mapped[str] = mapped_column(String(255))
+    excluded_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+    )
