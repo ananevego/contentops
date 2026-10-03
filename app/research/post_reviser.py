@@ -49,18 +49,35 @@ def _matching_claim(sentence: str, claims: list[dict]) -> dict | None:
         )
         if normalized_claim and (
             len(normalized_sentence & normalized_claim) / len(normalized_claim)
-            >= 0.5
+            >= 0.7
         ):
             return claim
 
     return None
 
 
+def _apply_confirmed_or_partial_claim(
+    sentence: str,
+    claim: dict,
+) -> str:
+    """Adds evidence to supported claims or uses the correction for partial ones."""
+    pmid = claim.get("pmid")
+    if claim.get("verdict") == "PARTIALLY_SUPPORTED":
+        corrected_sentence = claim.get("reason", "").strip() or sentence
+    else:
+        corrected_sentence = sentence
+
+    if pmid and f"PMID: {pmid}" not in corrected_sentence:
+        return corrected_sentence.rstrip(". ") + f". (PMID: {pmid})"
+
+    return corrected_sentence
+
+
 def build_pubmed_supplement_fallback(
     post: str,
     fact_check: dict,
 ) -> str:
-    """Добавляет PMID к подтверждённым тезисам, не меняя остальные."""
+    """Правит частичные тезисы, добавляет PMID и сохраняет остальные."""
     claims = fact_check.get("claims", [])
     parts = re.split(r"(?<=[.!?…])(\s+)", post)
     supplemented_parts = []
@@ -69,11 +86,11 @@ def build_pubmed_supplement_fallback(
         sentence = parts[index]
         separator = parts[index + 1] if index + 1 < len(parts) else ""
         claim = _matching_claim(sentence, claims)
-        pmid = claim.get("pmid") if claim else None
-
-        if claim and claim.get("verdict") == "SUPPORTED" and pmid:
-            if f"PMID: {pmid}" not in sentence:
-                sentence = sentence.rstrip(". ") + f". (PMID: {pmid})"
+        if claim and claim.get("verdict") in {
+            "SUPPORTED",
+            "PARTIALLY_SUPPORTED",
+        }:
+            sentence = _apply_confirmed_or_partial_claim(sentence, claim)
 
         supplemented_parts.append(sentence)
         supplemented_parts.append(separator)
@@ -81,11 +98,11 @@ def build_pubmed_supplement_fallback(
     return "".join(supplemented_parts).strip()
 
 
-def build_supported_only_fallback(
+def build_revised_pubmed_fallback(
     post: str,
     fact_check: dict,
 ) -> str:
-    """Оставляет только предложения с подтверждёнными PubMed тезисами."""
+    """Оставляет подтверждённые и исправленные частичные тезисы."""
     claims = fact_check.get("claims", [])
     parts = re.split(r"(?<=[.!?…])(\s+)", post)
     supported_parts = []
@@ -93,12 +110,13 @@ def build_supported_only_fallback(
     for index in range(0, len(parts), 2):
         sentence = parts[index]
         claim = _matching_claim(sentence, claims)
-        if not claim or claim.get("verdict") != "SUPPORTED":
+        if not claim or claim.get("verdict") not in {
+            "SUPPORTED",
+            "PARTIALLY_SUPPORTED",
+        }:
             continue
 
-        pmid = claim.get("pmid")
-        if pmid and f"PMID: {pmid}" not in sentence:
-            sentence = sentence.rstrip(". ") + f". (PMID: {pmid})"
+        sentence = _apply_confirmed_or_partial_claim(sentence, claim)
         supported_parts.append(sentence.strip())
 
     return "\n\n".join(supported_parts)
@@ -181,18 +199,19 @@ def supplement_post_with_pubmed(
     post: str,
     fact_check: dict,
 ) -> str:
-    """Adds PubMed citations to supported claims without changing other text."""
+    """Amends partial claims and adds PubMed while retaining other claims."""
     return _generate_pubmed_post(
         post,
         fact_check,
         instructions="""
-Твоя задача — дополнить, а не исправлять пост.
-- Сохрани исходный текст полностью: не удаляй, не переписывай, не сокращай,
-  не переставляй и не смягчай ни одну фразу, включая неподтверждённые тезисы.
-- Только для тезисов со статусом SUPPORTED добавь сразу после исходной фразы
-  PMID из отчёта в виде «(PMID: 12345678)».
-- Не добавляй PMID к PARTIALLY_SUPPORTED, CONTRADICTED или
-  INSUFFICIENT_EVIDENCE.
+Твоя задача — дополнить пост, не удаляя остальные тезисы.
+- Сохрани весь исходный текст, кроме тезисов со статусом PARTIALLY_SUPPORTED:
+  их перепиши строго в соответствии с reason из отчёта, не усиливая вывод.
+- Для SUPPORTED добавь сразу после исходной фразы PMID из отчёта в виде
+  «(PMID: 12345678)».
+- Для PARTIALLY_SUPPORTED добавь PMID после исправленной формулировки.
+- CONTRADICTED и INSUFFICIENT_EVIDENCE оставь в исходном виде: не исправляй,
+  не удаляй и не добавляй к ним PMID.
 - Не придумывай исследования, цифры, медицинские эффекты или PMID.
 - Верни только готовый пост без комментариев редактора.
 """.strip(),
@@ -201,26 +220,27 @@ def supplement_post_with_pubmed(
     )
 
 
-def filter_post_to_supported_pubmed(
+def revise_post_with_pubmed(
     post: str,
     fact_check: dict,
 ) -> str:
-    """Keeps only claims confirmed by PubMed."""
+    """Keeps supported claims, amends partial ones, and removes other claims."""
     return _generate_pubmed_post(
         post,
         fact_check,
         instructions="""
-Твоя задача — создать строгую версию поста, в которой остаются только тезисы
-со статусом SUPPORTED в отчёте.
-- Полностью удали PARTIALLY_SUPPORTED, CONTRADICTED и
-  INSUFFICIENT_EVIDENCE, а также любые утверждения, не подтверждённые в отчёте.
-- Для каждого оставленного тезиса сразу после него укажи PMID из отчёта в виде
-  «(PMID: 12345678)», если PMID есть.
-- Не сохраняй заголовки, CTA или связующий текст, если в них есть
-  неподтверждённое утверждение.
+Твоя задача — создать строгую версию поста.
+- SUPPORTED оставь без усиления формулировки и добавь PMID из отчёта в виде
+  «(PMID: 12345678)».
+- PARTIALLY_SUPPORTED перепиши строго в соответствии с reason из отчёта и
+  добавь PMID после исправленной формулировки.
+- Полностью удали CONTRADICTED, INSUFFICIENT_EVIDENCE и остальные
+  неподтверждённые научные тезисы.
+- Не добавляй в пост неподтверждённые утверждения в заголовках, CTA или
+  связующем тексте.
 - Не придумывай исследования, цифры, медицинские эффекты, причины или PMID.
 - Верни только готовый пост без комментариев редактора.
 """.strip(),
-        fallback=build_supported_only_fallback,
+        fallback=build_revised_pubmed_fallback,
         minimum_length=1,
     )

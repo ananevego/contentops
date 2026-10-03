@@ -1160,7 +1160,7 @@ async def button_handler(
 
     if query.data in {
         "supplement_post_pubmed",
-        "filter_post_pubmed",
+        "revise_post_pubmed",
     }:
         post = context.user_data.get("latest_post")
         fact_check = context.user_data.get("latest_fact_check")
@@ -1174,22 +1174,22 @@ async def button_handler(
 
         is_supplement = query.data == "supplement_post_pubmed"
         progress_text = (
-            "➕ Добавляю PubMed к подтверждённым тезисам..."
+            "➕ Добавляю PubMed и уточняю частичные тезисы..."
             if is_supplement
-            else "✂️ Оставляю только подтверждённые тезисы PubMed..."
+            else "✂️ Исправляю тезисы по PubMed и убираю неподтверждённые..."
         )
         await query.edit_message_text(progress_text)
 
         try:
             from app.research.post_reviser import (
-                filter_post_to_supported_pubmed,
+                revise_post_with_pubmed,
                 supplement_post_with_pubmed,
             )
 
             revision_function = (
                 supplement_post_with_pubmed
                 if is_supplement
-                else filter_post_to_supported_pubmed
+                else revise_post_with_pubmed
             )
             revised_post = await asyncio.to_thread(
                 revision_function,

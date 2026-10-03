@@ -403,14 +403,14 @@ def pubmed_result_menu(
     keyboard = [
         [
             InlineKeyboardButton(
-                "➕ Добавить PubMed к подтверждённым",
+                "➕ Добавить PubMed, не трогая остальные",
                 callback_data="supplement_post_pubmed",
             ),
         ],
         [
             InlineKeyboardButton(
-                "✂️ Оставить только подтверждённые",
-                callback_data="filter_post_pubmed",
+                "✂️ Исправить тезисы и добавить PubMed",
+                callback_data="revise_post_pubmed",
             ),
         ],
     ]
