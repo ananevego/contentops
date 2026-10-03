@@ -1,4 +1,6 @@
+import asyncio
 import os
+import time
 import xml.etree.ElementTree as ET
 
 import httpx
@@ -39,6 +41,16 @@ PUBMED_FETCH_URL = (
 )
 
 
+# Даже с NCBI API key разрешено не более 10 запросов в секунду. Оставляем
+# запас для других задач бота с тем же ключом и IP-адресом.
+NCBI_REQUESTS_PER_SECOND = 8
+NCBI_REQUEST_INTERVAL = 1 / NCBI_REQUESTS_PER_SECOND
+MAX_RATE_LIMIT_RETRIES = 3
+
+_ncbi_request_lock = asyncio.Lock()
+_next_ncbi_request_at = 0.0
+
+
 # ==========================================================
 # NCBI SETTINGS
 # ==========================================================
@@ -76,6 +88,53 @@ def _get_ncbi_settings() -> tuple[str, str]:
         )
 
     return api_key, email
+
+
+async def _wait_for_ncbi_slot() -> None:
+    """Serializes E-utilities calls below the shared NCBI rate limit."""
+    global _next_ncbi_request_at
+
+    async with _ncbi_request_lock:
+        delay = _next_ncbi_request_at - time.monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        _next_ncbi_request_at = time.monotonic() + NCBI_REQUEST_INTERVAL
+
+
+def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
+    """Uses server guidance when available, otherwise exponential backoff."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(float(retry_after), NCBI_REQUEST_INTERVAL)
+        except ValueError:
+            pass
+
+    return float(2 ** attempt)
+
+
+async def _request_ncbi(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict,
+) -> httpx.Response:
+    """Makes an NCBI request with rate limiting and automatic 429 recovery."""
+    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        await _wait_for_ncbi_slot()
+        response = await client.get(url, params=params)
+
+        if response.status_code != 429:
+            response.raise_for_status()
+            return response
+
+        if attempt == MAX_RATE_LIMIT_RETRIES:
+            response.raise_for_status()
+
+        delay = _retry_after_seconds(response, attempt)
+        print(f"PubMed rate limited; retrying in {delay:.1f}s")
+        await asyncio.sleep(delay)
+
+    raise RuntimeError("PubMed request retries exhausted")
 
 
 # ==========================================================
@@ -167,15 +226,11 @@ async def search_pubmed(
     ) as client:
 
         # Отправляем GET-запрос.
-        response = await client.get(
+        response = await _request_ncbi(
+            client,
             PUBMED_SEARCH_URL,
-            params=params,
+            params,
         )
-
-        # Если HTTP статус плохой,
-        # например 400 / 429 / 500,
-        # здесь будет выброшено исключение.
-        response.raise_for_status()
 
         # Преобразуем JSON в Python dict.
         data = response.json()
@@ -293,12 +348,11 @@ async def fetch_pubmed_articles(
     ) as client:
 
         # Получаем записи статей.
-        response = await client.get(
+        response = await _request_ncbi(
+            client,
             PUBMED_FETCH_URL,
-            params=params,
+            params,
         )
-
-        response.raise_for_status()
 
         # EFetch возвращает XML.
         xml_text = response.text

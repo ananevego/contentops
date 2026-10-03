@@ -1,7 +1,7 @@
 """Regression tests for keeping keyword-only PubMed hits out of fact checks."""
 
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from app.research.fact_checker import (
     _build_pubmed_queries,
@@ -9,9 +9,35 @@ from app.research.fact_checker import (
     _extract_json,
     _recover_claims_from_malformed_json,
 )
+from app.research.pubmed import _request_ncbi
 
 
 class FactCheckerRelevanceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pubmed_request_retries_after_rate_limit(self):
+        rate_limited = Mock(status_code=429, headers={})
+        success = Mock(status_code=200, headers={})
+        success.raise_for_status = Mock()
+        client = Mock(
+            get=AsyncMock(side_effect=[rate_limited, success]),
+        )
+
+        with patch(
+            "app.research.pubmed._wait_for_ncbi_slot",
+            new=AsyncMock(),
+        ), patch(
+            "app.research.pubmed.asyncio.sleep",
+            new=AsyncMock(),
+        ) as sleep:
+            response = await _request_ncbi(
+                client,
+                "https://example.test",
+                {"query": "test"},
+            )
+
+        self.assertIs(response, success)
+        self.assertEqual(client.get.await_count, 2)
+        sleep.assert_awaited_once_with(1.0)
+
     def test_extract_json_repairs_invalid_pubmed_field_tag_escaping(self):
         result = _extract_json(
             r'''[{"search_query": "\"resistance training\"\[Title/Abstract\]"}]'''
