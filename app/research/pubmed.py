@@ -137,6 +137,10 @@ async def search_pubmed(
         # Максимальное количество результатов.
         "retmax": max_results,
 
+        # PubMed Best Match, чтобы первые кандидаты соответствовали запросу,
+        # а не только были самыми свежими.
+        "sort": "relevance",
+
         # Просим JSON вместо XML.
         #
         # Для ESearch это удобно,

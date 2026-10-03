@@ -340,14 +340,19 @@ AND (strength[Title/Abstract] OR hypertrophy[Title/Abstract])
 # ПОИСК СТАТЕЙ В PUBMED
 # ==========================================================
 
+MAX_PUBMED_QUERIES = 5
+MAX_CANDIDATE_ARTICLES = 25
+
+
 def _build_pubmed_queries(search_query: str) -> list[str]:
-    """Возвращает точный и безопасный широкий запросы для одного тезиса.
+    """Returns a precise query and a bounded set of recall-oriented fallbacks.
 
     Модель иногда добавляет в первичный запрос вывод тезиса
     («сохранение техники», «цена ошибки»), который не обязан встречаться в
     названии или аннотации исследования. Поэтому для КАЖДОГО запроса строится
-    версия без ограничения только title/abstract и с двумя первыми понятиями.
-    Это общее расширение, а не правило для конкретного поста.
+    версия без ограничения только title/abstract. Если она всё ещё слишком
+    строгая, ищем по каждой паре понятий, а не только по первым двум: outcome
+    часто стоит в конце запроса и иначе теряется.
 
     RIR — пример неоднозначной аббревиатуры в PubMed (в том числе
     inflammatory risk), поэтому словарь расшифровок не позволяет искать по
@@ -376,18 +381,23 @@ def _build_pubmed_queries(search_query: str) -> list[str]:
         for concept in re.split(r"\s+AND\s+", untagged_query, flags=re.IGNORECASE)
         if concept.strip(" ()")
     ]
-    broad_concepts = concepts[:2]
+    if untagged_query.strip():
+        queries.append(untagged_query.strip())
 
-    if broad_concepts:
-        broad_query = " AND ".join(broad_concepts)
-        if (
-            '"repetitions in reserve"' in broad_query.casefold()
-            and "resistance training" not in broad_query.casefold()
-        ):
-            broad_query = f'"resistance training" AND ({broad_query})'
-        queries.append(broad_query)
+    for first_index, first_concept in enumerate(concepts):
+        for second_concept in concepts[first_index + 1:]:
+            broad_query = f"{first_concept} AND {second_concept}"
+            if (
+                '"repetitions in reserve"' in broad_query.casefold()
+                and "resistance training" not in broad_query.casefold()
+            ):
+                broad_query = f'"resistance training" AND ({broad_query})'
+            queries.append(broad_query)
 
-    return list(dict.fromkeys(queries))
+            if len(dict.fromkeys(queries)) >= MAX_PUBMED_QUERIES:
+                return list(dict.fromkeys(queries))[:MAX_PUBMED_QUERIES]
+
+    return list(dict.fromkeys(queries))[:MAX_PUBMED_QUERIES]
 
 
 async def _collect_evidence(
@@ -421,15 +431,23 @@ async def _collect_evidence(
         # запрос. Он не подменяет тезис выводом: выбор и вердикт по-прежнему
         # делают только по фактической статье ниже.
         articles_by_pmid = {}
-        for query in _build_pubmed_queries(search_query):
+        for query_index, query in enumerate(
+            _build_pubmed_queries(search_query),
+        ):
             articles = await search_and_fetch_pubmed(
                 query=query,
-                max_results=10,
+                max_results=10 if query_index == 0 else 5,
             )
             for article in articles:
                 pmid = article.get("pmid")
                 if pmid:
                     articles_by_pmid[str(pmid)] = article
+
+                if len(articles_by_pmid) >= MAX_CANDIDATE_ARTICLES:
+                    break
+
+            if len(articles_by_pmid) >= MAX_CANDIDATE_ARTICLES:
+                break
 
         articles = list(articles_by_pmid.values())
 

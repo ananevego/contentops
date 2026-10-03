@@ -26,17 +26,22 @@ class FactCheckerRelevanceTests(unittest.IsolatedAsyncioTestCase):
             'creatine[Title/Abstract] AND "resistance training"[Title/Abstract] AND strength[Title/Abstract]'
         )
 
-        self.assertEqual(len(queries), 2)
         self.assertIn("creatine", queries[1])
         self.assertIn('"resistance training"', queries[1])
         self.assertNotIn("Title/Abstract", queries[1])
+        self.assertIn(
+            '"resistance training" AND strength',
+            queries,
+        )
 
     def test_rir_is_expanded_before_searching(self):
         queries = _build_pubmed_queries('RIR[Title/Abstract] AND fatigue[Title/Abstract]')
 
         self.assertNotIn("RIR[", queries[0])
         self.assertIn('"repetitions in reserve"', queries[0])
-        self.assertIn('"resistance training"', queries[1])
+        self.assertTrue(
+            any('"resistance training"' in query for query in queries[1:])
+        )
 
     def test_recovers_claims_with_unescaped_quotes_in_query(self):
         recovered = _recover_claims_from_malformed_json(
@@ -84,7 +89,7 @@ class FactCheckerRelevanceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(evidence[0]["articles"], [articles[0]])
         self.assertEqual(search.await_count, 2)
-        self.assertEqual(search.await_args.kwargs["max_results"], 10)
+        self.assertEqual(search.await_args.kwargs["max_results"], 5)
 
     async def test_collect_evidence_keeps_candidates_if_classifier_rejects_all(self):
         with patch(
