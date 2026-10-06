@@ -20,10 +20,12 @@ RUSSIAN_OUTPUT_INSTRUCTION = (
 # Список живёт здесь, чтобы уже запущенный бот не использовал устаревший
 # POST_MODELS из модуля генератора, загруженного до обновления.
 FREE_POST_MODELS = [
+    "openrouter/free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "thinkingmachines/inkling:free",
     "inclusionai/ling-3.0-flash-sante:free",
     "nex-agi/nex-n2.5-mini:free",
     "inclusionai/ling-3.0-flash-vl:free",
-    "openrouter/free",
 ]
 
 

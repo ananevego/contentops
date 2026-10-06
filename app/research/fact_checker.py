@@ -9,6 +9,7 @@ from app.research.pubmed import (
     search_and_fetch_pubmed,
 )
 from app.research.relevance import analyze_relevance
+from app.research.model_fallback import request_research_completion
 
 
 # ==========================================================
@@ -23,11 +24,6 @@ from app.research.relevance import analyze_relevance
 #
 # API-ключ не хранится непосредственно в коде.
 load_dotenv()
-
-
-# Используем ту же модель Qwen,
-# которую уже подключили для генерации контента.
-MODEL_NAME = "qwen/qwen3-8b"
 
 
 # OpenRouter предоставляет API,
@@ -248,8 +244,8 @@ AND (strength[Title/Abstract] OR hypertrophy[Title/Abstract])
 {post}
 """.strip()
 
-    response = await client.chat.completions.create(
-        model=MODEL_NAME,
+    content = await request_research_completion(
+        client=client,
         messages=[
             {
                 "role": "system",
@@ -262,17 +258,6 @@ AND (strength[Title/Abstract] OR hypertrophy[Title/Abstract])
         ],
         temperature=0,
     )
-
-    content = (
-        response.choices[0]
-        .message
-        .content
-    )
-
-    if not content:
-        raise RuntimeError(
-            "Qwen returned an empty claim extraction response"
-        )
 
     try:
         data = _extract_json(content)
@@ -692,8 +677,8 @@ INSUFFICIENT_EVIDENCE
         # QWEN
         # --------------------------------------------------
 
-        response = await client.chat.completions.create(
-            model=MODEL_NAME,
+        content = await request_research_completion(
+            client=client,
             messages=[
                 {
                     "role": "system",
@@ -706,17 +691,6 @@ INSUFFICIENT_EVIDENCE
             ],
             temperature=0,
         )
-
-        content = (
-            response.choices[0]
-            .message
-            .content
-        )
-
-        if not content:
-            raise RuntimeError(
-                "Qwen returned an empty fact-check response"
-            )
 
         result = _extract_json(
             content

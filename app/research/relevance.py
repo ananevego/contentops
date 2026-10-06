@@ -5,6 +5,8 @@ import re
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
+from app.research.model_fallback import request_research_completion
+
 
 # ==========================================================
 # CONFIGURATION
@@ -18,14 +20,6 @@ from dotenv import load_dotenv
 #
 # Мы не храним ключ внутри Python-кода.
 load_dotenv()
-
-
-# Модель, которую мы уже используем
-# в нашем ContentOps.
-#
-# Здесь можно будет поменять модель позже,
-# не переписывая всю логику агента.
-MODEL_NAME = "qwen/qwen3-8b"
 
 
 # OpenRouter предоставляет API,
@@ -338,10 +332,8 @@ PUBMED ARTICLES:
     # REQUEST TO QWEN
     # ------------------------------------------------------
 
-    response = await client.chat.completions.create(
-        model=MODEL_NAME,
-
-        # System message задает правила агента.
+    content = await request_research_completion(
+        client=client,
         messages=[
             {
                 "role": "system",
@@ -357,17 +349,6 @@ PUBMED ARTICLES:
         # поэтому высокая температура здесь не нужна.
         temperature=0,
     )
-
-    # ------------------------------------------------------
-    # Получаем текст ответа модели
-    # ------------------------------------------------------
-
-    content = response.choices[0].message.content
-
-    if not content:
-        raise RuntimeError(
-            "Qwen returned an empty response"
-        )
 
     # ------------------------------------------------------
     # Разбираем JSON

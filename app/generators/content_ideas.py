@@ -12,10 +12,17 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 POST_MODELS = [
+    "openrouter/free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "thinkingmachines/inkling:free",
     "inclusionai/ling-3.0-flash-sante:free",
     "nex-agi/nex-n2.5-mini:free",
     "inclusionai/ling-3.0-flash-vl:free",
-    "openrouter/free",
+]
+
+IDEA_MODELS = [
+    "qwen/qwen3-8b",
+    *POST_MODELS,
 ]
 
 RUSSIAN_OUTPUT_INSTRUCTION = (
@@ -166,21 +173,36 @@ Trend score: {item.trend_score}
 Ссылка: {item.url}
 """
 
-    response = get_openrouter_client().chat.completions.create(
-        model="qwen/qwen3-8b",
-        messages=[
-            {
-                "role": "system",
-                "content": RUSSIAN_OUTPUT_INSTRUCTION,
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-    )
+    client = get_openrouter_client()
+    errors = []
 
-    return response.choices[0].message.content
+    for model in IDEA_MODELS:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": RUSSIAN_OUTPUT_INSTRUCTION,
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+            )
+            idea = response.choices[0].message.content
+            if isinstance(idea, str) and idea.strip():
+                return idea
+            errors.append(f"{model}: empty response")
+        except Exception as error:
+            errors.append(f"{model}: {type(error).__name__}")
+
+    logger.warning(
+        "All idea-generation models failed: %s",
+        "; ".join(errors),
+    )
+    raise RuntimeError("All idea-generation models are unavailable")
 
 
 def generate_telegram_post(
