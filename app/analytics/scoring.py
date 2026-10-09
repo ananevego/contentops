@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 try:  # Importing ContentOps must still work when an optional accelerator is absent.
-    from numba import njit
+    from numba import njit, prange
 
     NUMBA_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised in minimal deployments
@@ -16,6 +16,8 @@ except ImportError:  # pragma: no cover - exercised in minimal deployments
             return function
 
         return decorator
+
+    prange = range
 
 
 def _trend_scores_numpy(
@@ -48,6 +50,24 @@ def _trend_scores_numba(
     return result
 
 
+@njit(cache=True, parallel=True)
+def _trend_scores_numba_parallel(
+    views: np.ndarray,
+    likes: np.ndarray,
+    comments: np.ndarray,
+    shares: np.ndarray,
+    age_hours: np.ndarray,
+) -> np.ndarray:
+    """Embarrassingly parallel numeric kernel; suitable for independent rows."""
+    result = np.empty(views.size, dtype=np.float64)
+    for index in prange(views.size):
+        safe_views = max(views[index], 1.0)
+        safe_age = max(age_hours[index], 1.0)
+        engagement = likes[index] + comments[index] * 2.0 + shares[index] * 3.0
+        result[index] = np.sqrt(safe_views) * (engagement / safe_views) / (1.0 + safe_age / 24.0)
+    return result
+
+
 def calculate_trend_scores(
     views: np.ndarray,
     likes: np.ndarray,
@@ -56,6 +76,7 @@ def calculate_trend_scores(
     age_hours: np.ndarray,
     *,
     use_numba: bool = True,
+    parallel: bool = False,
 ) -> np.ndarray:
     """Calculates scores on numeric arrays; I/O and ORM stay outside Numba."""
     arrays = tuple(
@@ -64,5 +85,8 @@ def calculate_trend_scores(
     )
     if len({array.size for array in arrays}) != 1:
         raise ValueError("All metric arrays must have equal length")
-    scores = _trend_scores_numba(*arrays) if use_numba and NUMBA_AVAILABLE else _trend_scores_numpy(*arrays)
+    if use_numba and NUMBA_AVAILABLE:
+        scores = _trend_scores_numba_parallel(*arrays) if parallel else _trend_scores_numba(*arrays)
+    else:
+        scores = _trend_scores_numpy(*arrays)
     return np.round(scores, 4)

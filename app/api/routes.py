@@ -2,15 +2,40 @@ from datetime import datetime
 from pathlib import Path
 import os
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.analytics.data import create_charts, load_content_frame, summary, trends
 from app.api.dependencies import get_db
-from app.api.schemas import AnalyticsSummary, ChartLinks, ContentCreate, ContentRead, TrendPoint
-from app.repositories.content import create_content, list_content
+from app.api.schemas import (
+    AnalyticsSummary,
+    ChartLinks,
+    ContentCreate,
+    ContentRead,
+    ContentUpdate,
+    TrendPoint,
+)
+from app.repositories.content import create_content, delete_content, get_content, list_content, update_content
 
 router = APIRouter()
+
+
+def _content_response(item) -> ContentRead:
+    return ContentRead(
+        id=item.id,
+        source=item.source,
+        external_id=item.external_id,
+        author=item.author,
+        text=item.text,
+        views=item.views,
+        likes=item.likes,
+        comments=item.comments,
+        shares=item.shares,
+        url=item.url,
+        created_at=datetime.fromisoformat(item.created_at.replace("Z", "+00:00")),
+        trend_score=item.trend_score,
+        tags=[tag.name for tag in item.tags],
+    )
 
 @router.get("/")
 def root():
@@ -54,7 +79,7 @@ def analytics_charts():
     tags=["content"],
 )
 def create_content_item(payload: ContentCreate, session: Session = Depends(get_db)):
-    return create_content(
+    item = create_content(
         session,
         source=payload.source.platform,
         external_id=payload.external_id,
@@ -68,7 +93,9 @@ def create_content_item(payload: ContentCreate, session: Session = Depends(get_d
         url=str(payload.url),
         created_at=payload.created_at,
         category=payload.source.category,
+        tags=payload.tags.root,
     )
+    return _content_response(item)
 
 
 @router.get("/content", response_model=list[ContentRead], tags=["content"])
@@ -80,11 +107,43 @@ def read_content(
     limit: int = Query(default=50, ge=1, le=100),
     session: Session = Depends(get_db),
 ):
-    return list_content(
+    return [_content_response(item) for item in list_content(
         session,
         platform=platform,
         category=category,
         created_after=created_after,
         min_trend_score=min_trend_score,
         limit=limit,
+    )]
+
+
+@router.patch("/content/{content_id}", response_model=ContentRead, tags=["content"])
+def patch_content_item(
+    content_id: int,
+    payload: ContentUpdate,
+    session: Session = Depends(get_db),
+):
+    item = get_content(session, content_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Content item not found")
+    changes = payload.model_dump(exclude_unset=True, exclude={"tags"})
+    if "url" in changes:
+        changes["url"] = str(changes["url"])
+    if "created_at" in changes:
+        changes["created_at"] = changes["created_at"].isoformat()
+    item = update_content(
+        session,
+        item,
+        changes,
+        tags=payload.tags.root if payload.tags is not None else None,
     )
+    return _content_response(item)
+
+
+@router.delete("/content/{content_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["content"])
+def delete_content_item(content_id: int, session: Session = Depends(get_db)) -> Response:
+    item = get_content(session, content_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Content item not found")
+    delete_content(session, item)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

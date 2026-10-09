@@ -16,3 +16,4 @@ numba
 celery
 flower
 redis
+shiny

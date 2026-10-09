@@ -26,5 +26,7 @@ def test_numba_and_numpy_paths_have_the_same_scores():
     )
     fallback = calculate_trend_scores(*values, use_numba=False)
     accelerated = calculate_trend_scores(*values, use_numba=True)
+    parallel = calculate_trend_scores(*values, use_numba=True, parallel=True)
 
     np.testing.assert_allclose(accelerated, fallback)
+    np.testing.assert_allclose(parallel, fallback)

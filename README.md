@@ -25,12 +25,13 @@ flowchart LR
 | NumPy | Нормализация просмотров и массивы trend score | `python -m app.analytics.report` |
 | Matplotlib | Три PNG-графика в `artifacts/` | `GET /analytics/charts` |
 | FastAPI | `app.main`, `app.api.routes` | `uvicorn app.main:app --reload`, затем `/docs` |
-| Pydantic v2 | `app.api.schemas` — вложенная `source`, `Field`, `model_validator` | `POST /content` через Swagger |
-| SQLAlchemy | модели и `app.repositories.content` | `GET /content?platform=tiktok` |
+| Pydantic v2 | `app.api.schemas` — `RootModel` тегов, `Field`, validator, serializer и `@validate_call` | `POST/PATCH /content` через Swagger |
+| SQLAlchemy | модели и `app.repositories.content`: 1:N категорий и N:N `ContentItem ↔ Tag` | `GET/PATCH/DELETE /content` |
 | Celery | `app.tasks` — bulk-пересчёт и отчёт | `celery -A app.tasks.celery_app worker -l INFO` |
 | Redis | broker/result backend в Compose | `docker compose up redis celery_worker` |
 | Flower | сервис `flower` в Compose | <http://localhost:5555> |
-| Numba | изолированное ядро `app.analytics.scoring` с NumPy fallback | `python -m app.analytics.benchmark` |
+| Shiny | интерактивный `app.shiny_dashboard` с фильтрами и тремя графиками | <http://localhost:8001> |
+| Numba | обычное и `parallel=True`/`prange` ядра с NumPy fallback | `python -m app.analytics.benchmark` |
 | Docker Compose | `docker-compose.yml`, `docker-compose.prod.yml` | `docker compose up --build` |
 | GitHub Actions | `.github/workflows/ci.yml` | push: pytest; публикация image только из `main` |
 
@@ -68,6 +69,13 @@ python -m venv .venv
 # Аналитика и графики без внешних ключей
 .venv/bin/python -m app.analytics.report
 .venv/bin/python -m app.analytics.benchmark
+
+# Notebook: NumPy, Pandas и Matplotlib data stack
+# Откройте notebooks/data_stack_demo.ipynb в Jupyter или VS Code
+
+# Интерактивный Shiny-дашборд
+.venv/bin/shiny run --host 0.0.0.0 --port 8001 app/shiny_dashboard.py
+# http://127.0.0.1:8001
 
 # Тесты (включая eager-режим Celery)
 .venv/bin/pytest -q

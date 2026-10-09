@@ -1,11 +1,21 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Table
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
+
+
+# Association table is deliberately schema-only: a tag may describe many
+# content items and every content item may have many tags.
+content_item_tags = Table(
+    "content_item_tags",
+    Base.metadata,
+    Column("content_id", ForeignKey("content_items.id"), primary_key=True),
+    Column("tag_id", ForeignKey("tags.id"), primary_key=True),
+)
 
 
 class ContentItemDB(Base):
@@ -35,6 +45,23 @@ class ContentItemDB(Base):
     categories: Mapped[list["ContentCategoryDB"]] = relationship(
         back_populates="content_item",
         cascade="all, delete-orphan",
+    )
+    tags: Mapped[list["TagDB"]] = relationship(
+        secondary=content_item_tags,
+        back_populates="content_items",
+    )
+
+
+class TagDB(Base):
+    """Reusable tag in the ContentItem ↔ Tag many-to-many relation."""
+
+    __tablename__ = "tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    content_items: Mapped[list[ContentItemDB]] = relationship(
+        secondary=content_item_tags,
+        back_populates="tags",
     )
 
 

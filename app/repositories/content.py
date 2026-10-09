@@ -4,7 +4,8 @@ from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem
-from app.models.content_db import ContentCategoryDB, ContentItemDB
+from app.api.schemas import normalize_tag_names
+from app.models.content_db import ContentCategoryDB, ContentItemDB, TagDB
 
 
 def save_content(session: Session, content: ContentItem):
@@ -58,6 +59,7 @@ def create_content(
     created_at: datetime,
     trend_score: float | None = None,
     category: str | None = None,
+    tags: list[str] | None = None,
 ) -> ContentItemDB:
     """Creates one API-supplied item, returning an existing external ID safely."""
     existing = session.scalar(
@@ -85,8 +87,58 @@ def create_content(
     session.refresh(item)
     if category:
         session.add(ContentCategoryDB(content_id=item.id, name=category))
-        session.commit()
+    if tags:
+        item.tags = _get_or_create_tags(session, tags)
+    session.commit()
+    session.refresh(item)
     return item
+
+
+def _get_or_create_tags(session: Session, tag_names: list[str]) -> list[TagDB]:
+    normalized = normalize_tag_names(tag_names)
+    existing = {
+        tag.name: tag
+        for tag in session.scalars(select(TagDB).where(TagDB.name.in_(normalized)))
+    }
+    tags: list[TagDB] = []
+    for name in normalized:
+        tag = existing.get(name)
+        if tag is None:
+            tag = TagDB(name=name)
+            session.add(tag)
+        tags.append(tag)
+    session.flush()
+    return tags
+
+
+def update_content(
+    session: Session,
+    item: ContentItemDB,
+    changes: dict,
+    *,
+    tags: list[str] | None = None,
+) -> ContentItemDB:
+    """Applies explicit API fields only; it never evaluates dynamic attributes."""
+    allowed = {
+        "source", "author", "text", "transcript", "views", "likes",
+        "comments", "shares", "url", "created_at", "trend_score",
+    }
+    for field, value in changes.items():
+        if field in allowed:
+            setattr(item, field, value)
+    if tags is not None:
+        item.tags = _get_or_create_tags(session, tags)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def delete_content(session: Session, item: ContentItemDB) -> None:
+    """Deletes a content item while preserving historical used-video rows."""
+    for used_record in item.used_records:
+        used_record.content_id = None
+    session.delete(item)
+    session.commit()
 
 
 def list_content(
