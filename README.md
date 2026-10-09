@@ -2,6 +2,90 @@
 
 ContentOps — сервис автоматизации работы с трендовым контентом. Telegram-бот получает запросы пользователя, собирает данные TikTok через Apify, сохраняет и ранжирует контент в PostgreSQL, а затем использует OpenRouter и PubMed API для генерации и проверки черновиков публикаций.
 
+## Учебный демонстрационный контур
+
+Репозиторий сохраняет production-поток Telegram-бота и дополняет его воспроизводимым контуром для дисциплины «Python для анализа данных и веб-разработки». В нём нет реальных пользовательских выгрузок, токенов или персональных данных: аналитика по умолчанию работает на небольшом синтетическом CSV `app/analytics/demo_content.csv`.
+
+```mermaid
+flowchart LR
+    Client[Swagger / клиент] --> API[FastAPI + Pydantic]
+    Bot[Telegram bot] --> DB[(PostgreSQL / SQLAlchemy)]
+    API --> DB
+    DB --> Analytics[Pandas + NumPy\nMatplotlib report]
+    Analytics --> Artifacts[artifacts/*.png]
+    API -. постановка задач .-> Redis[(Redis)]
+    Redis --> Worker[Celery worker\nNumba score]
+    Worker --> DB
+    Redis --> Flower[Flower :5555]
+```
+
+| Технология | Где реализована | Как проверить |
+| --- | --- | --- |
+| Pandas | `app.analytics.data` — очистка, merge, groupby, pivot_table, фильтрация | `python -m app.analytics.report` |
+| NumPy | Нормализация просмотров и массивы trend score | `python -m app.analytics.report` |
+| Matplotlib | Три PNG-графика в `artifacts/` | `GET /analytics/charts` |
+| FastAPI | `app.main`, `app.api.routes` | `uvicorn app.main:app --reload`, затем `/docs` |
+| Pydantic v2 | `app.api.schemas` — вложенная `source`, `Field`, `model_validator` | `POST /content` через Swagger |
+| SQLAlchemy | модели и `app.repositories.content` | `GET /content?platform=tiktok` |
+| Celery | `app.tasks` — bulk-пересчёт и отчёт | `celery -A app.tasks.celery_app worker -l INFO` |
+| Redis | broker/result backend в Compose | `docker compose up redis celery_worker` |
+| Flower | сервис `flower` в Compose | <http://localhost:5555> |
+| Numba | изолированное ядро `app.analytics.scoring` с NumPy fallback | `python -m app.analytics.benchmark` |
+| Docker Compose | `docker-compose.yml`, `docker-compose.prod.yml` | `docker compose up --build` |
+| GitHub Actions | `.github/workflows/ci.yml` | push: pytest; публикация image только из `main` |
+
+### API аналитики
+
+* `GET /analytics/summary` — агрегированные безопасные данные;
+* `GET /analytics/trends` — временной ряд trend score;
+* `GET /analytics/charts` — строит line, bar и scatter PNG в игнорируемой папке `artifacts/`;
+* `POST /content` — валидирует и создаёт элемент контента; `GET /content` поддерживает безопасные фильтры `platform`, `category`, `created_after`, `min_trend_score` и `limit`.
+
+Каждый ответ FastAPI содержит `X-Request-ID` и `X-Process-Time-Ms`. Лог содержит только метод, путь, статус, длительность и request ID — заголовки, запросы и секреты не записываются.
+
+### Скриншоты аналитического отчёта
+
+Ниже — воспроизводимые результаты команды `python -m app.analytics.report` на синтетическом наборе. В отличие от runtime-артефактов в игнорируемом `artifacts/`, эти три снимка хранятся в `docs/screenshots/` исключительно для README и отчёта.
+
+| Динамика trend score | Просмотры по категориям |
+| --- | --- |
+| ![Линейный график динамики trend score](docs/screenshots/trend_dynamics.png) | ![Столбчатая диаграмма просмотров по категориям](docs/screenshots/category_views.png) |
+
+![Scatter plot зависимости просмотров и engagement rate](docs/screenshots/engagement_scatter.png)
+
+На скриншотах показаны обязательные для работы графики: линейная динамика, bar chart категорий и scatter plot связи просмотров с вовлечением. Исходные значения обезличены и предназначены только для демонстрации pipeline.
+
+### Локальный запуск и проверки
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# API и Swagger / ReDoc
+.venv/bin/uvicorn app.main:app --reload
+# http://127.0.0.1:8000/docs, http://127.0.0.1:8000/redoc
+
+# Аналитика и графики без внешних ключей
+.venv/bin/python -m app.analytics.report
+.venv/bin/python -m app.analytics.benchmark
+
+# Тесты (включая eager-режим Celery)
+.venv/bin/pytest -q
+```
+
+Для полного локального контура с PostgreSQL, Redis, worker и Flower:
+
+```bash
+docker compose up --build
+docker compose logs -f celery_worker
+```
+
+Celery не является условием запуска API или Telegram-бота: отсутствие Redis проявится только при вызове `.delay()` понятной ошибкой подключения, а импорты и обычный локальный режим не падают.
+
+### Границы production-ready
+
+Telegram-бот, PostgreSQL, Docker production-compose и CI/CD — существующий production-контур. API-аналитика, демо-CSV, Flower и Numba benchmark добавлены для учебной демонстрации; перед публикацией API наружу следует добавить аутентификацию, миграции схемы и политику хранения артефактов. В production Compose Redis и worker можно запускать вместе с bot; image продолжает собираться и публикуется только после тестов в ветке `main`.
+
 ## Архитектура
 
 ```mermaid
@@ -308,12 +392,11 @@ Docker перезапустит его после аварийного заве�
 
 ## CI/CD
 
-GitHub Actions настроен в [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Workflow запускается на каждый `push` и работает в следующей последовательности:
+GitHub Actions настроен в [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Workflow запускается на каждый `push`: тесты выполняются в любой ветке, а публикация Docker-образа выполняется только из `main`.
 
 ```text
 push → checkout → Python 3.13 → pip install → pytest
-     → login в ghcr.io через GITHUB_TOKEN
-     → Docker build → push образа
+main → login в ghcr.io через GITHUB_TOKEN → Docker build → push образа
 ```
 
 После успешного `pytest` workflow публикует образ в GitHub Container Registry с двумя тегами:
@@ -369,4 +452,3 @@ Telegram bot started
 ```
 
 что подтверждает запуск бота с использованием Cloudflare Worker relay.
-

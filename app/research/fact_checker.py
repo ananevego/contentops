@@ -325,7 +325,9 @@ AND (strength[Title/Abstract] OR hypertrophy[Title/Abstract])
 # ПОИСК СТАТЕЙ В PUBMED
 # ==========================================================
 
-MAX_PUBMED_QUERIES = 5
+# One precise query, two recall-oriented variants and up to three concept
+# pairs. This stays bounded while keeping a late outcome term searchable.
+MAX_PUBMED_QUERIES = 6
 MAX_CANDIDATE_ARTICLES = 25
 
 
@@ -335,9 +337,10 @@ def _build_pubmed_queries(search_query: str) -> list[str]:
     Модель иногда добавляет в первичный запрос вывод тезиса
     («сохранение техники», «цена ошибки»), который не обязан встречаться в
     названии или аннотации исследования. Поэтому для КАЖДОГО запроса строится
-    версия без ограничения только title/abstract. Если она всё ещё слишком
-    строгая, ищем по каждой паре понятий, а не только по первым двум: outcome
-    часто стоит в конце запроса и иначе теряется.
+    версия без ограничения только title/abstract и версия без кавычек, в
+    которой PubMed может применить Automatic Term Mapping (MeSH и синонимы).
+    Если они всё ещё слишком строгие, ищем по каждой паре понятий, а не только
+    по первым двум: outcome часто стоит в конце запроса и иначе теряется.
 
     RIR — пример неоднозначной аббревиатуры в PubMed (в том числе
     inflammatory risk), поэтому словарь расшифровок не позволяет искать по
@@ -368,6 +371,12 @@ def _build_pubmed_queries(search_query: str) -> list[str]:
     ]
     if untagged_query.strip():
         queries.append(untagged_query.strip())
+        # Кавычки отключают Automatic Term Mapping PubMed. Отдельная версия
+        # без них даёт поиску шанс найти медицинский синоним или MeSH-термин;
+        # она остаётся лишь кандидатом и проходит строгий relevance-фильтр.
+        automatic_mapping_query = untagged_query.replace('"', "").strip()
+        if automatic_mapping_query:
+            queries.append(automatic_mapping_query)
 
     for first_index, first_concept in enumerate(concepts):
         for second_concept in concepts[first_index + 1:]:
@@ -448,16 +457,16 @@ async def _collect_evidence(
             for result in relevance
             if result["relevance"] == "RELEVANT"
         }
-        # Классификатор релевантности — защитный слой, но не источник истины.
-        # Если он ошибочно отверг все статьи, передаём кандидатов фактчекеру:
-        # тот обязан вернуть INSUFFICIENT_EVIDENCE, если ни одна статья не
-        # проверяет точную формулировку, вместо ложного «ничего не найдено».
-        if relevant_pmids:
-            articles = [
-                article
-                for article in articles
-                if str(article.get("pmid")) in relevant_pmids
-            ]
+        # Relevance — обязательный шлюз между тематическим поиском и
+        # фактчекингом. Нельзя возвращать в fact-checker статьи, которые этот
+        # этап отверг: иначе LLM получает только тематически похожий материал и
+        # может искусственно сопоставить его с тезисом. Если подходящих статей
+        # нет, следующий этап честно вернёт INSUFFICIENT_EVIDENCE.
+        articles = [
+            article
+            for article in articles
+            if str(article.get("pmid")) in relevant_pmids
+        ]
 
         evidence.append(
             {
@@ -474,6 +483,35 @@ async def _collect_evidence(
 # ШАГ 3
 # ПРОВЕРКА ТЕЗИСА ПО ЛУЧШЕЙ СТАТЬЕ
 # ==========================================================
+
+def _normalize_evidence_text(text: str) -> str:
+    """Normalizes whitespace and case without changing an evidence passage."""
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _is_verifiable_evidence_quote(
+    quote: object,
+    article: dict | None,
+) -> bool:
+    """Accepts only a non-trivial quote copied from the selected PubMed record."""
+    if not isinstance(quote, str) or not article:
+        return False
+
+    normalized_quote = _normalize_evidence_text(quote.strip(" \t\n\"'«»"))
+    if len(re.findall(r"\w+", normalized_quote, flags=re.UNICODE)) < 3:
+        return False
+
+    searchable_text = _normalize_evidence_text(
+        " ".join(
+            value
+            for value in (
+                article.get("title", ""),
+                article.get("abstract", ""),
+            )
+            if isinstance(value, str)
+        )
+    )
+    return bool(normalized_quote and normalized_quote in searchable_text)
 
 async def _check_evidence(
     client: AsyncOpenAI,
@@ -618,6 +656,11 @@ INSUFFICIENT_EVIDENCE
 - Учитывай популяцию, вмешательство, результат и тип исследования.
 - Если статья не подтверждает точную формулировку тезиса,
   используй PARTIALLY_SUPPORTED или INSUFFICIENT_EVIDENCE.
+- Для SUPPORTED, PARTIALLY_SUPPORTED и CONTRADICTED обязательно верни
+  evidence_quote: дословную выдержку минимум из трёх слов из title или abstract
+  выбранной статьи. Эта выдержка должна прямо обосновывать verdict и должна
+  остаться на исходном языке статьи. Не переводи, не пересказывай и не
+  придумывай её. Если такой выдержки нет, выбери INSUFFICIENT_EVIDENCE.
 
 --------------------------------------------------
 ЯЗЫК
@@ -654,7 +697,8 @@ INSUFFICIENT_EVIDENCE
   "best_pmid": "12345678",
   "article_title_ru": "Русское название исследования",
   "verdict": "SUPPORTED",
-  "reason": "Короткий вывод на русском языке."
+  "reason": "Короткий вывод на русском языке.",
+  "evidence_quote": "Exact excerpt from the supplied title or abstract"
 }
 """.strip()
 
@@ -720,6 +764,10 @@ INSUFFICIENT_EVIDENCE
             "reason"
         )
 
+        evidence_quote = result.get(
+            "evidence_quote"
+        )
+
         # --------------------------------------------------
         # Проверяем verdict
         # --------------------------------------------------
@@ -752,6 +800,9 @@ INSUFFICIENT_EVIDENCE
         ):
             article_title_ru = ""
 
+        if not isinstance(evidence_quote, str):
+            evidence_quote = ""
+
         # --------------------------------------------------
         # Проверяем PMID
         # --------------------------------------------------
@@ -782,6 +833,35 @@ INSUFFICIENT_EVIDENCE
 
             article_title_ru = ""
 
+        selected_article = next(
+            (
+                article
+                for article in articles
+                if str(article.get("pmid")) == str(best_pmid)
+            ),
+            None,
+        )
+
+        # Ссылка на PMID допустима только тогда, когда модель может указать
+        # проверяемый фрагмент именно выбранной записи. Это защищает от
+        # тематического, но недоказательного сопоставления claim ↔ paper.
+        if verdict in {
+            "SUPPORTED",
+            "PARTIALLY_SUPPORTED",
+            "CONTRADICTED",
+        } and not _is_verifiable_evidence_quote(
+            evidence_quote,
+            selected_article,
+        ):
+            best_pmid = None
+            verdict = "INSUFFICIENT_EVIDENCE"
+            reason = (
+                "В найденной статье нет проверяемой дословной выдержки, "
+                "достаточной для связи с точной формулировкой тезиса."
+            )
+            article_title_ru = ""
+            evidence_quote = ""
+
         # Подтверждающий вердикт без выбранной статьи нельзя показать
         # пользователю и нельзя считать доказательством.
         if not best_pmid and verdict != "INSUFFICIENT_EVIDENCE":
@@ -791,6 +871,14 @@ INSUFFICIENT_EVIDENCE
                 "нельзя оценить по найденным данным."
             )
             article_title_ru = ""
+
+        # Недостаток доказательств не должен выглядеть как ссылка, которая
+        # подтверждает тезис. Кандидаты остаются внутренними данными этапа,
+        # но в финальный claim ↔ paper mapping не попадают.
+        if verdict == "INSUFFICIENT_EVIDENCE":
+            best_pmid = None
+            article_title_ru = ""
+            evidence_quote = ""
 
         results.append(
             {
@@ -805,6 +893,7 @@ INSUFFICIENT_EVIDENCE
                 "article_title_ru": (
                     article_title_ru.strip()
                 ),
+                "evidence_quote": evidence_quote.strip(),
                 "articles": articles,
             }
         )
@@ -968,6 +1057,7 @@ async def check_post(
                 "article": article_title,
                 "pmid": best_pmid,
                 "source": source,
+                "evidence_quote": claim_result.get("evidence_quote", ""),
             }
         )
 

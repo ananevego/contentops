@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -26,6 +26,27 @@ class ContentItemDB(Base):
     url: Mapped[str]
     created_at: Mapped[str]
     trend_score: Mapped[float | None]
+    # The foreign key existed before this relationship declaration.  Declaring
+    # both sides makes the existing 1:N relation visible to SQLAlchemy without
+    # requiring a destructive schema migration.
+    used_records: Mapped[list["UsedTikTokVideoDB"]] = relationship(
+        back_populates="content_item",
+    )
+    categories: Mapped[list["ContentCategoryDB"]] = relationship(
+        back_populates="content_item",
+        cascade="all, delete-orphan",
+    )
+
+
+class ContentCategoryDB(Base):
+    """A normalized 1:N category relation added without changing old content rows."""
+
+    __tablename__ = "content_categories"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    content_id: Mapped[int] = mapped_column(ForeignKey("content_items.id"), index=True)
+    name: Mapped[str] = mapped_column(String(50), index=True)
+    content_item: Mapped[ContentItemDB] = relationship(back_populates="categories")
 
 
 class TelegramUserSettingsDB(Base):
@@ -69,6 +90,9 @@ class UsedTikTokVideoDB(Base):
     used_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
+    )
+    content_item: Mapped[ContentItemDB | None] = relationship(
+        back_populates="used_records",
     )
 
 
