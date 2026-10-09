@@ -5,11 +5,13 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from app.research.fact_checker import (
     _build_pubmed_queries,
+    _check_evidence,
     _collect_evidence,
     _extract_json,
     _recover_claims_from_malformed_json,
 )
 from app.research.pubmed import _request_ncbi
+from app.research.relevance import analyze_relevance
 
 
 class FactCheckerRelevanceTests(unittest.IsolatedAsyncioTestCase):
@@ -57,6 +59,10 @@ class FactCheckerRelevanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Title/Abstract", queries[1])
         self.assertIn(
             '"resistance training" AND strength',
+            queries,
+        )
+        self.assertIn(
+            "creatine AND resistance training AND strength",
             queries,
         )
 
@@ -114,10 +120,11 @@ class FactCheckerRelevanceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(evidence[0]["articles"], [articles[0]])
-        self.assertEqual(search.await_count, 2)
+        self.assertEqual(search.await_count, 3)
         self.assertEqual(search.await_args.kwargs["max_results"], 5)
 
-    async def test_collect_evidence_keeps_candidates_if_classifier_rejects_all(self):
+    async def test_collect_evidence_drops_candidates_if_classifier_rejects_all(self):
+        """A keyword-only result must not reach the claim-to-paper matcher."""
         with patch(
             "app.research.fact_checker.search_and_fetch_pubmed",
             new=AsyncMock(return_value=[{"pmid": "plaque"}]),
@@ -133,4 +140,95 @@ class FactCheckerRelevanceTests(unittest.IsolatedAsyncioTestCase):
                 [{"claim": "RIR в силовой тренировке", "search_query": "resistance training RIR"}]
             )
 
-        self.assertEqual(evidence[0]["articles"], [{"pmid": "plaque"}])
+        self.assertEqual(evidence[0]["articles"], [])
+
+    async def test_relevance_marks_omitted_article_as_not_relevant(self):
+        articles = [
+            {"pmid": "relevant", "title": "Exercise study", "abstract": ""},
+            {"pmid": "omitted", "title": "Other study", "abstract": ""},
+        ]
+        model_response = '''[
+            {"pmid": "relevant", "relevance": "RELEVANT", "reason": "Matches"}
+        ]'''
+
+        with patch(
+            "app.research.relevance._get_client",
+            return_value=Mock(),
+        ), patch(
+            "app.research.relevance.request_research_completion",
+            new=AsyncMock(return_value=model_response),
+        ):
+            results = await analyze_relevance("Exercise improves strength", articles)
+
+        self.assertEqual(
+            results,
+            [
+                {"pmid": "relevant", "relevance": "RELEVANT", "reason": "Matches"},
+                {
+                    "pmid": "omitted",
+                    "relevance": "NOT_RELEVANT",
+                    "reason": "Статья не была классифицирована моделью релевантности.",
+                },
+            ],
+        )
+
+    async def test_fact_checker_rejects_unverifiable_quote_for_supported_claim(self):
+        evidence = [{
+            "claim": "Креатин повышает максимальную силу у тренированных взрослых.",
+            "articles": [{
+                "pmid": "42",
+                "title": "Creatine and resistance exercise",
+                "abstract": "RESULTS: Creatine increased maximal strength in trained adults.",
+                "publication_types": ["Randomized Controlled Trial"],
+                "publication_date": "2026",
+            }],
+        }]
+        model_response = '''{
+            "best_pmid": "42",
+            "article_title_ru": "Креатин и силовые упражнения",
+            "verdict": "SUPPORTED",
+            "reason": "Тезис подтверждён.",
+            "evidence_quote": "Creatine improves strength in every athlete"
+        }'''
+
+        with patch(
+            "app.research.fact_checker.request_research_completion",
+            new=AsyncMock(return_value=model_response),
+        ):
+            result = await _check_evidence(Mock(), evidence)
+
+        self.assertEqual(result[0]["verdict"], "INSUFFICIENT_EVIDENCE")
+        self.assertIsNone(result[0]["best_pmid"])
+        self.assertEqual(result[0]["evidence_quote"], "")
+
+    async def test_fact_checker_keeps_supported_claim_only_with_exact_evidence_quote(self):
+        evidence = [{
+            "claim": "Креатин повышает максимальную силу у тренированных взрослых.",
+            "articles": [{
+                "pmid": "42",
+                "title": "Creatine and resistance exercise",
+                "abstract": "RESULTS: Creatine increased maximal strength in trained adults.",
+                "publication_types": ["Randomized Controlled Trial"],
+                "publication_date": "2026",
+            }],
+        }]
+        model_response = '''{
+            "best_pmid": "42",
+            "article_title_ru": "Креатин и силовые упражнения",
+            "verdict": "SUPPORTED",
+            "reason": "Тезис подтверждён.",
+            "evidence_quote": "Creatine increased maximal strength in trained adults"
+        }'''
+
+        with patch(
+            "app.research.fact_checker.request_research_completion",
+            new=AsyncMock(return_value=model_response),
+        ):
+            result = await _check_evidence(Mock(), evidence)
+
+        self.assertEqual(result[0]["verdict"], "SUPPORTED")
+        self.assertEqual(result[0]["best_pmid"], "42")
+        self.assertEqual(
+            result[0]["evidence_quote"],
+            "Creatine increased maximal strength in trained adults",
+        )

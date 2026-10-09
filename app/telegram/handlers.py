@@ -8,6 +8,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+from telegram.error import TelegramError
 from telegram.ext import (
     ContextTypes,
 )
@@ -52,6 +53,20 @@ from app.generators.content_ideas import (
 user_settings = {}
 user_trends = {}
 logger = logging.getLogger(__name__)
+
+
+async def _answer_callback_safely(query) -> None:
+    """Acknowledges a button press without letting a relay blip drop its work."""
+    try:
+        await query.answer()
+    except TelegramError as error:
+        # Callback acknowledgement only clears Telegram's loading indicator.
+        # It must not prevent the actual requested action from running when a
+        # transient relay/network error occurs or an old callback is replayed.
+        logger.warning(
+            "Could not acknowledge callback query; continuing handler: %s",
+            type(error).__name__,
+        )
 
 
 def is_tiktok_url(value: str) -> bool:
@@ -310,6 +325,9 @@ def format_pubmed_report(
         if claim.get("source"):
             lines.append(f"Источник: {claim['source']}")
 
+        if claim.get("evidence_quote"):
+            lines.append(f"Фрагмент из статьи: {claim['evidence_quote']}")
+
         lines.append("")
 
     return "\n".join(lines)
@@ -512,7 +530,7 @@ async def button_handler(
 ):
     query = update.callback_query
 
-    await query.answer()
+    await _answer_callback_safely(query)
 
     user_id = query.from_user.id
 

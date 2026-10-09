@@ -3,5 +3,6 @@
 .DS_Store
 .pytest_cache/
 graphify-out/
+artifacts/
 __pycache__/
 *.py[cod]

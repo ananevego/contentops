@@ -25,5 +25,45 @@ services:
     environment:
       POSTGRES_HOST: postgres
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  celery_worker:
+    image: ghcr.io/ananevego/contentops:latest
+    command: celery -A app.tasks.celery_app worker --loglevel=INFO
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  flower:
+    image: ghcr.io/ananevego/contentops:latest
+    command: celery -A app.tasks.celery_app flower --port=5555
+    env_file:
+      - .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "5555:5555"
+    restart: unless-stopped
+
 volumes:
   postgres_data:

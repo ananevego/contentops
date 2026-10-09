@@ -57,3 +57,27 @@ def test_strict_pubmed_revision_keeps_supported_and_corrected_partial_claims():
         "Добавка может поддерживать восстановление после тренировки. "
         "(PMID: 87654321)"
     )
+
+
+def test_fallback_uses_the_best_matching_claim_not_the_first_similar_one():
+    fact_check = {
+        "claims": [
+            {
+                "claim": "Силовые тренировки повышают силу у пожилых людей",
+                "verdict": "SUPPORTED",
+                "pmid": "111",
+            },
+            {
+                "claim": "Силовые тренировки повышают силу у подростков",
+                "verdict": "SUPPORTED",
+                "pmid": "222",
+            },
+        ]
+    }
+
+    result = build_pubmed_supplement_fallback(
+        "Силовые тренировки повышают силу у подростков.",
+        fact_check,
+    )
+
+    assert result.endswith("(PMID: 222)")

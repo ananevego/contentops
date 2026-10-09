@@ -363,6 +363,7 @@ PUBMED ARTICLES:
     # ------------------------------------------------------
 
     validated_results = []
+    classified_pmids = set()
     valid_pmids = {
         str(article.get("pmid"))
         for article in articles
@@ -393,6 +394,10 @@ PUBMED ARTICLES:
         if not pmid or str(pmid) not in valid_pmids:
             continue
 
+        pmid = str(pmid)
+        if pmid in classified_pmids:
+            continue
+
         if relevance not in {
             "RELEVANT",
             "NOT_RELEVANT",
@@ -407,19 +412,25 @@ PUBMED ARTICLES:
 
         validated_results.append(
             {
-                "pmid": str(pmid),
+                "pmid": pmid,
                 "relevance": relevance,
                 "reason": reason.strip(),
             }
         )
+        classified_pmids.add(pmid)
 
-    # Если модель вернула что-то,
-    # но ни один результат не прошел нашу валидацию,
-    # лучше упасть с понятной ошибкой,
-    # чем незаметно продолжить pipeline.
-    if not validated_results:
-        raise RuntimeError(
-            "Qwen returned no valid relevance results"
-        )
+    # Неполный ответ LLM не должен оставлять статью в неопределённом статусе:
+    # такой кандидат нельзя передавать фактчекеру как потенциальное evidence.
+    # Маркируем его NOT_RELEVANT, а не угадываем релевантность.
+    for article in articles:
+        pmid = str(article.get("pmid")) if article.get("pmid") else None
+        if pmid and pmid not in classified_pmids:
+            validated_results.append(
+                {
+                    "pmid": pmid,
+                    "relevance": "NOT_RELEVANT",
+                    "reason": "Статья не была классифицирована моделью релевантности.",
+                }
+            )
 
     return validated_results

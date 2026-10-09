@@ -45,17 +45,22 @@ def _matching_claim(sentence: str, claims: list[dict]) -> dict | None:
     if not normalized_sentence:
         return None
 
+    best_claim = None
+    best_score = 0.0
+
     for claim in claims:
         normalized_claim = set(
             re.findall(r"[а-яёa-z]{4,}", claim.get("claim", "").lower()),
         )
-        if normalized_claim and (
-            len(normalized_sentence & normalized_claim) / len(normalized_claim)
-            >= 0.7
-        ):
-            return claim
+        if not normalized_claim:
+            continue
 
-    return None
+        score = len(normalized_sentence & normalized_claim) / len(normalized_claim)
+        if score >= 0.7 and score > best_score:
+            best_claim = claim
+            best_score = score
+
+    return best_claim
 
 
 def _apply_confirmed_or_partial_claim(

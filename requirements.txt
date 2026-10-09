@@ -9,3 +9,10 @@ openai
 httpx
 pydantic
 pytest
+pandas
+numpy
+matplotlib
+numba
+celery
+flower
+redis
